@@ -11,34 +11,39 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install OpenClaw
+      - name: Install and Run OpenClaw
         run: |
+          # 1. Install globally
           npm install -g openclaw
-          # Add npm global bin to path so 'openclaw' command is found
-          echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
+          
+          # 2. Identify the global bin path
+          GLOBAL_BIN=$(npm config get prefix)/bin
+          
+          # 3. Export path for this and future steps
+          echo "$GLOBAL_BIN" >> $GITHUB_PATH
+          
+          # 4. Start OpenClaw using the full path to ensure it is found
+          $GLOBAL_BIN/openclaw start --port 8080 --host 0.0.0.0 &
+          
+          echo "Waiting for OpenClaw to initialize..."
+          sleep 15
+          
+          # 5. Verify it is running
+          if netstat -tuln | grep -q 8080; then
+            echo "OpenClaw is running on port 8080."
+          else
+            echo "Error: OpenClaw failed to start."
+            exit 1
+          fi
 
       - name: Setup cloudflared
         uses: AnimMouse/setup-cloudflared@v2
 
-      - name: Start OpenClaw
-        run: |
-          # Start OpenClaw in the background and verify it's running
-          openclaw start --port 8080 --host 0.0.0.0 &
-          echo "Waiting for OpenClaw to initialize..."
-          sleep 10
-          # Verify the process is listening on port 8080
-          netstat -tuln | grep 8080
-
       - name: Start Cloudflare Tunnel
         run: |
-          # This command will output the .trycloudflare.com link in the logs
+          # The cloudflared action automatically looks for the URL
+          # Use the official action for the most reliable output
           cloudflared tunnel --url http://localhost:8080 &
-          # Wait a moment for the tunnel to register
-          sleep 10
-          echo "Tunnel started. Look at the logs above for the 'trycloudflare.com' URL."
           
-      - name: Keep alive
-        run: |
-          echo "OpenClaw and Tunnel are running."
-          # Keep the workflow alive for 6 hours
+          echo "Tunnel started. Please scroll through the logs above to find the 'trycloudflare.com' URL."
           sleep 6h
