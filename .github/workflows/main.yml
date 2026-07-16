@@ -7,8 +7,6 @@ name: OpenClaw + Gemma 4 Telegram Bot
 # drop the GitHub Actions wrapper entirely.
 on:
   workflow_dispatch: {}
-  schedule:
-    - cron: "0 */5 * * *"
 
 concurrency:
   group: openclaw-gateway
