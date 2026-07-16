@@ -1,5 +1,4 @@
 name: OpenClaw CI
-
 on:
   push:
     branches: [ main, master ]
@@ -10,7 +9,8 @@ on:
 jobs:
   run-openclaw:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 30
+
     # -----------------------------------------------------------------
     # CHANGE THIS to your subfolder path if package.json is not in the root.
     # For example: working-directory: ./my-subfolder-name
@@ -25,8 +25,6 @@ jobs:
 
       # Step 1: Clean up pre-installed software to reclaim ~20GB of disk space
       - name: Free Disk Space
-        # We run this with root level shell so it bypasses working-directory restriction
-        working-directory: .
         run: |
           echo "Disk space before cleanup:"
           df -h
@@ -43,30 +41,39 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      # Step 3: Install dependencies
+      # Step 3: Install dependencies (npm ci = reproducible, lockfile-respecting)
       - name: Install Project Dependencies
-        run: npm install
+        run: npm ci
 
       # Step 4: Install Ollama
       - name: Install Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
 
-      # Step 5: Spin up Ollama and Pull the Gemma 4 Edge Model
+      # Step 5: Spin up Ollama and pull the model, with a bounded wait and logging
       - name: Start Ollama & Pull Model
         run: |
-          # Start the Ollama server in the background
-          ollama serve &
-          
-          # Wait for the Ollama server to respond
+          # Start the Ollama server in the background, detached, with logs captured
+          nohup ollama serve > ollama.log 2>&1 &
+          echo $! > ollama.pid
+
           echo "Waiting for Ollama to start..."
-          until curl -s http://localhost:11434/ > /dev/null; do
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:11434/ > /dev/null; then
+              echo "Ollama is running!"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Ollama failed to start within 60 seconds. Logs:"
+              cat ollama.log
+              exit 1
+            fi
             sleep 2
           done
-          echo "Ollama is running!"
-          
-          # Pull the resource-friendly Gemma 4 Edge model
+
+          # Pull the model, failing loudly if it doesn't succeed
           ollama pull gemma4:e4b
 
       # Step 6: Run your application / test suite
