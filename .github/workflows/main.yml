@@ -1,41 +1,31 @@
-name: OpenClaw + Gemma 4 Telegram Bot
-# GitHub Actions cannot host a true always-on process — jobs are killed at
-# the timeout below no matter what. This workflow relaunches itself every
-# 5 hours via cron so the bot comes back up shortly after each kill. If you
-# want a bot that's actually always online with no gaps, run this same
-# install script on a cheap always-on VPS instead (systemd/Docker) and
-# drop the GitHub Actions wrapper entirely.
-on:
-  workflow_dispatch: {}
+name: OpenClaw Telegram Bot
 
-concurrency:
-  group: openclaw-gateway
-  cancel-in-progress: true
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  run-openclaw:
+  run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 340   # stay under GitHub's 360-minute (6h) hard cap
     env:
-      # Set this in: repo Settings -> Secrets and variables -> Actions -> New repository secret
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      # Optional but recommended: set this secret too, so the gateway has a
-      # stable auth token instead of generating a new one every restart.
       GATEWAY_AUTH_TOKEN: ${{ secrets.GATEWAY_AUTH_TOKEN }}
-      # Real numeric Telegram user ID, hard-coded directly (not a secret).
       ADMIN_TELEGRAM_ID: "680349125"
-      OLLAMA_MODEL: "gemma4:e2b" # 7.2GB — fits a CPU-only runner. Other real tags: e4b, 12b, 26b, 31b
+      OLLAMA_MODEL: "gemma4:e2b"
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 22
+      - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: 22
 
       - name: Install Ollama
-        run: curl -fsSL https://ollama.com/install.sh | sh
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
 
       - name: Start Ollama server in background
         run: |
@@ -48,23 +38,46 @@ jobs:
       - name: Pull Gemma 4 (free, local, no API key)
         run: ollama pull "$OLLAMA_MODEL"
 
-      - name: List pulled models (debug)
-        run: ollama list
-
       - name: Install OpenClaw
-        run: npm install -g openclaw@latest
+        run: |
+          curl -fsSL https://openclaw.ai/install.sh | bash
 
       - name: Write OpenClaw config
         run: |
-          cat > "openclaw.json" <<EOF
+          mkdir -p "$HOME/.openclaw"
+          
+          # Build gateway auth config dynamically based on token presence
+          GATEWAY_AUTH_JSON='{"mode": "none"}'
+          if [ -n "$GATEWAY_AUTH_TOKEN" ]; then
+            GATEWAY_AUTH_JSON="{\"mode\": \"token\", \"token\": \"$GATEWAY_AUTH_TOKEN\"}"
+          fi
+
+          cat > "$HOME/.openclaw/openclaw.json" <<EOF
           {
             "gateway": {
-              "mode": "local"
+              "mode": "local",
+              "bind": "loopback",
+              "port": 18789,
+              "auth": $GATEWAY_AUTH_JSON
             },
             "agents": {
               "defaults": {
                 "model": {
                   "primary": "ollama/${OLLAMA_MODEL}"
+                },
+                "models": {
+                  "ollama/${OLLAMA_MODEL}": {
+                    "alias": "gemma"
+                  }
+                }
+              }
+            },
+            "models": {
+              "mode": "merge",
+              "providers": {
+                "ollama": {
+                  "baseUrl": "http://127.0.0.1:11434",
+                  "apiKey": "ollama-local"
                 }
               }
             },
@@ -88,17 +101,30 @@ jobs:
               "ownerAllowFrom": ["telegram:${ADMIN_TELEGRAM_ID}"]
             }
           }
-          EOF
-          chmod 600 "openclaw.json"
+EOF
 
-      - name: Show config being loaded (debug)
-        run: cat "openclaw.json"
-
-      - name: Set gateway auth token (if provided)
-        if: env.GATEWAY_AUTH_TOKEN != ''
+      - name: Run openclaw gateway
         run: |
-          openclaw config set gateway.auth.mode token
-          openclaw config set gateway.auth.token "$GATEWAY_AUTH_TOKEN"
+          nohup openclaw gateway > /tmp/openclaw.log 2>&1 &
+          
+          echo "Waiting for OpenClaw Gateway to start..."
+          SUCCESS=false
+          for i in $(seq 1 30); do
+            if curl -s http://127.0.0.1:18789/health >/dev/null 2>&1 || curl -s http://127.0.0.1:18789 >/dev/null 2>&1; then
+              echo "OpenClaw Gateway started successfully!"
+              SUCCESS=true
+              break
+            fi
+            sleep 1
+          done
+          
+          if [ "$SUCCESS" = "false" ]; then
+            echo "Error: OpenClaw Gateway failed to start. Tail of /tmp/openclaw.log:"
+            tail -n 50 /tmp/openclaw.log
+            exit 1
+          fi
 
-      - name: Run OpenClaw Gateway
-        run: openclaw gateway
+      - name: Keep workflow running
+        run: |
+          echo "Bot is now active on Telegram. Keeping runner alive..."
+          tail -f /tmp/openclaw.log
