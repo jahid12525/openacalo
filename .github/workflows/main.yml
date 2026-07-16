@@ -37,15 +37,21 @@ jobs:
           df -h
 
       # Step 2: Set up Node.js environment
+      # Node 20 is deprecated on GitHub-hosted runners as of Sept 2025 — use current LTS.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: '24'
+          # NOTE: 'cache: npm' requires a committed package-lock.json/yarn.lock.
+          # This repo doesn't have one yet, so caching is left off for now.
+          # Once you commit a lockfile, add `cache: 'npm'` back here and switch
+          # the next step to `npm ci` for faster, reproducible installs.
 
-      # Step 3: Install dependencies (npm ci = reproducible, lockfile-respecting)
+      # Step 3: Install dependencies
+      # Using `npm install` because no package-lock.json is committed to this repo.
+      # `npm ci` would fail without one. Once a lockfile exists, prefer `npm ci`.
       - name: Install Project Dependencies
-        run: npm ci
+        run: npm install
 
       # Step 4: Install Ollama
       - name: Install Ollama
