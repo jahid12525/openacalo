@@ -62,12 +62,15 @@ jobs:
                 }
               }
             },
+            "commands": {
+              "ownerAllowFrom": [680349125]
+            },
             "channels": {
               "telegram": {
                 "enabled": true,
-                "botToken": "8854553209:AAH-VwkbH58qEA3pCq2oi1V4yqZ8AIO60xI",
-                "allowedUsers": [680349125],
-                "adminUser": 680349125
+                "botToken": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
+                "dmPolicy": "allowlist",
+                "allowFrom": [680349125]
               }
             }
           }
