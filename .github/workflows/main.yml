@@ -6,9 +6,6 @@ jobs:
   run-openclaw:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -17,26 +14,31 @@ jobs:
       - name: Install OpenClaw
         run: |
           npm install -g openclaw
-          # Run install/setup if required by OpenClaw to prepare the interface
-          # openclaw init 
+          # Add npm global bin to path so 'openclaw' command is found
+          echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
 
-      - name: Start OpenClaw
-        run: |
-          # Start the process in the background
-          # Ensure it is bound to 0.0.0.0 so the tunnel can reach it
-          openclaw start --port 8080 --host 0.0.0.0 & 
-          
       - name: Setup cloudflared
         uses: AnimMouse/setup-cloudflared@v2
 
-      - name: Setup cloudflared tunnel
-        uses: AnimMouse/setup-cloudflared/tunnel@v2
-        with:
-          url: http://localhost:8080
+      - name: Start OpenClaw
+        run: |
+          # Start OpenClaw in the background and verify it's running
+          openclaw start --port 8080 --host 0.0.0.0 &
+          echo "Waiting for OpenClaw to initialize..."
+          sleep 10
+          # Verify the process is listening on port 8080
+          netstat -tuln | grep 8080
 
+      - name: Start Cloudflare Tunnel
+        run: |
+          # This command will output the .trycloudflare.com link in the logs
+          cloudflared tunnel --url http://localhost:8080 &
+          # Wait a moment for the tunnel to register
+          sleep 10
+          echo "Tunnel started. Look at the logs above for the 'trycloudflare.com' URL."
+          
       - name: Keep alive
         run: |
-          echo "OpenClaw is running."
-          echo "Access the web interface via the URL provided above."
-          # Keeps the action running so the tunnel stays open
+          echo "OpenClaw and Tunnel are running."
+          # Keep the workflow alive for 6 hours
           sleep 6h
