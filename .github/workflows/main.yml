@@ -83,11 +83,11 @@ jobs:
               }
             },
             models: {
-              mode: 'merge',
+              // 'replace' stops OpenClaw from merging cloud defaults
+              mode: 'replace', 
               providers: {
                 ollama: {
-                  baseUrl: 'http://127.0.0.1:11434',
-                  apiKey: 'ollama-local'
+                  baseUrl: 'http://127.0.0.1:11434'
                 }
               }
             },
@@ -102,9 +102,12 @@ jobs:
             },
             plugins: {
               entries: {
-                ollama: {
-                  enabled: true
-                }
+                ollama: { enabled: true },
+                openai: { enabled: false },
+                anthropic: { enabled: false },
+                google: { enabled: false },
+                groq: { enabled: false },
+                cohere: { enabled: false }
               }
             },
             commands: {
