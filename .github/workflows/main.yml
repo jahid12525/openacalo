@@ -1,53 +1,99 @@
-name: Run OpenClaw
+name: OpenClaw + Cloudflare Tunnel (demo)
+
+# Manual trigger only — this spins up OpenClaw on a throwaway GitHub-hosted
+# runner and exposes its web UI through a free Cloudflare Quick Tunnel.
+# IMPORTANT: everything here dies when the job ends (time limit below, or
+# whenever you cancel it). This is for poking around, not for a service you
+# depend on. See the run comments for why.
 on:
   workflow_dispatch:
+    inputs:
+      keep_alive_minutes:
+        description: "How many minutes to keep the tunnel open (max ~350, GH Actions job limit is 6h)"
+        required: false
+        default: "30"
 
 jobs:
-  run-openclaw:
+  openclaw-demo:
     runs-on: ubuntu-latest
+    timeout-minutes: 360 # hard ceiling GitHub imposes anyway; keep_alive_minutes controls actual runtime
     steps:
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "24" # OpenClaw needs Node 22.22.3+ / 24.15+ / 25.9+
 
-      - name: Install and Run OpenClaw
+      - name: Install OpenClaw
+        run: npm install -g openclaw@latest
+
+      - name: Install cloudflared
         run: |
-          # Install globally
-          npm install -g openclaw
-          
-          # Run using npx to automatically resolve the binary and capture logs
-          nohup npx openclaw start --port 8080 --host 0.0.0.0 > openclaw.log 2>&1 &
-          
-          echo "Waiting for OpenClaw to initialize..."
-          sleep 20
-          
-          # Verify the process is running on port 8080
-          if netstat -tuln | grep -q 8080; then
-            echo "OpenClaw is successfully running on port 8080."
-          else
-            echo "Error: OpenClaw failed to start. Printing log output:"
-            cat openclaw.log
+          curl -L --output cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Minimal OpenClaw config
+        run: |
+          mkdir -p ~/.openclaw
+          cat > ~/.openclaw/openclaw.json <<'EOF'
+          {
+            "agent": {
+              "model": "${{ vars.OPENCLAW_MODEL || 'anthropic/claude-sonnet-4-5' }}"
+            }
+          }
+          EOF
+        # Set an OPENCLAW_MODEL repo/org variable if you want a different default model.
+        # You'll also need to add the matching provider API key as a secret and export it
+        # below (e.g. ANTHROPIC_API_KEY) — OpenClaw reads provider keys from the environment.
+
+      - name: Start OpenClaw gateway (background)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          nohup openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
+          echo "Waiting for gateway to come up..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:18789/ > /dev/null; then
+              echo "Gateway is up."
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:18789/ > /dev/null || (echo "Gateway did not start" && cat openclaw.log && exit 1)
+
+      - name: Start Cloudflare Quick Tunnel (background) and capture URL
+        run: |
+          nohup cloudflared tunnel --url http://localhost:18789 > cloudflared.log 2>&1 &
+          echo "Waiting for tunnel URL..."
+          for i in $(seq 1 30); do
+            URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' cloudflared.log | head -n1 || true)
+            if [ -n "$URL" ]; then
+              echo "TUNNEL_URL=$URL" >> "$GITHUB_ENV"
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$URL" ]; then
+            echo "Failed to get tunnel URL"
+            cat cloudflared.log
             exit 1
           fi
 
-      - name: Setup cloudflared
-        uses: AnimMouse/setup-cloudflared@v2
+      - name: Print access URL
+        run: |
+          echo "########################################################"
+          echo "OpenClaw web UI is live at: $TUNNEL_URL"
+          echo "It will stay up for ${{ github.event.inputs.keep_alive_minutes }} minutes,"
+          echo "then this job ends and the tunnel + OpenClaw both disappear."
+          echo "########################################################"
 
-      - name: Start Cloudflare Tunnel
+      - name: Keep the job (and tunnel) alive
+        run: sleep $(( ${{ github.event.inputs.keep_alive_minutes }} * 60 ))
+
+      - name: Dump logs on exit (for debugging)
+        if: always()
         run: |
-          # Start the tunnel in the background
-          cloudflared tunnel --url http://localhost:8080 &
-          
-          # Wait for the tunnel to establish
-          sleep 10
-          
-          echo "--------------------------------------------------------"
-          echo "Tunnel started. Look at the logs for the 'trycloudflare.com' URL."
-          echo "--------------------------------------------------------"
-          
-      - name: Keep alive
-        run: |
-          echo "OpenClaw is running and accessible via the Cloudflare tunnel."
-          # Keeps the workflow active for 6 hours
-          sleep 6h
+          echo "----- openclaw.log -----"
+          cat openclaw.log || true
+          echo "----- cloudflared.log -----"
+          cat cloudflared.log || true
