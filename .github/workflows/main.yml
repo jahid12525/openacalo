@@ -48,6 +48,9 @@ jobs:
       - name: Pull Gemma 4 (free, local, no API key)
         run: ollama pull "$OLLAMA_MODEL"
 
+      - name: List pulled models (debug)
+        run: ollama list
+
       - name: Install OpenClaw
         run: npm install -g openclaw@latest
 
@@ -88,6 +91,9 @@ jobs:
           }
           EOF
           chmod 600 "$HOME/.openclaw/openclaw.json"
+
+      - name: Show config being loaded (debug)
+        run: cat "$HOME/.openclaw/openclaw.json"
 
       - name: Set gateway auth token (if provided)
         if: env.GATEWAY_AUTH_TOKEN != ''
