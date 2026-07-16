@@ -104,13 +104,27 @@ jobs:
             exit 1
           fi
 
-      - name: Keep-Alive Daemon
+      - name: Keep-Alive Daemon & Auto-Device Approver
         run: |
           HOURS=${{ inputs.duration }}
-          # Limit to maximum 6 hours to prevent GitHub runner timeouts
           if [ "$HOURS" -gt 6 ]; then
             HOURS=6
           fi
-          SECONDS=$((HOURS * 3600))
-          echo "Keeping runner alive for $HOURS hour(s) ($SECONDS seconds)..."
-          sleep $SECONDS
+          TOTAL_SECONDS=$((HOURS * 3600))
+          ELAPSED_SECONDS=0
+          
+          echo "Keeping runner alive for $HOURS hour(s). Monitoring for incoming browser pairing requests..."
+          
+          while [ $ELAPSED_SECONDS -lt $TOTAL_SECONDS ]; do
+            # Extract any pending device UUID from the device list command output
+            PENDING_ID=$(openclaw devices list 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
+            
+            if [ -n "$PENDING_ID" ]; then
+              echo "🔒 [Auto-Auth] Detected connection request ID: $PENDING_ID"
+              openclaw devices approve "$PENDING_ID"
+              echo "✅ [Auto-Auth] Device successfully paired!"
+            fi
+            
+            sleep 4
+            ELAPSED_SECONDS=$((ELAPSED_SECONDS + 4))
+          done
