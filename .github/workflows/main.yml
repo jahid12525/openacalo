@@ -35,9 +35,6 @@ jobs:
           mkdir -p ~/.openclaw
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
-            "env": {
-              "OPENROUTER_API_KEY": "${{ inputs.openrouter_api_key }}"
-            },
             "gateway": {
               "mode": "local",
               "bind": "loopback",
@@ -48,13 +45,19 @@ jobs:
                 "dangerouslyAllowHostHeaderOriginFallback": true
               }
             },
+            "models": {
+              "providers": {
+                "openrouter": {
+                  "apiKey": "${{ inputs.openrouter_api_key }}"
+                }
+              }
+            },
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "openrouter/openrouter/auto"
+                  "primary": "openrouter/auto"
                 },
                 "models": {
-                  "openrouter/openrouter/auto": {},
                   "openrouter/auto": {}
                 }
               }
@@ -116,7 +119,6 @@ jobs:
           echo "Keeping runner alive for $HOURS hour(s). Monitoring for incoming browser pairing requests..."
           
           while [ $ELAPSED_SECONDS -lt $TOTAL_SECONDS ]; do
-            # Extract any pending device UUID from the device list command output
             PENDING_ID=$(openclaw devices list 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
             
             if [ -n "$PENDING_ID" ]; then
