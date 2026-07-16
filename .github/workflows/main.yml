@@ -9,8 +9,6 @@ name: OpenClaw + Gemma 4 Telegram Bot
 
 on:
   workflow_dispatch: {}
-  schedule:
-    - cron: "0 */5 * * *"   # restarts every 5 hours, before the 6h job cap
 
 concurrency:
   group: openclaw-gateway
