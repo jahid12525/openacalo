@@ -9,7 +9,7 @@ name: OpenClaw + Gemma 4 Telegram Bot
 
 on:
   workflow_dispatch: {}
-
+  
 concurrency:
   group: openclaw-gateway
   cancel-in-progress: true
@@ -27,7 +27,7 @@ jobs:
       # bot will talk to. Get yours by messaging @userinfobot or your own
       # bot once and checking `openclaw logs --follow`.
       ADMIN_TELEGRAM_ID: "123456789"   # <-- replace with your real numeric Telegram user ID
-      OLLAMA_MODEL: "gemma4:2b"        # swap for gemma4:4b / gemma4:27b if you need more capability
+      OLLAMA_MODEL: "gemma4:e2b-it-qat" # quantized, 4.3GB — fits a CPU-only runner. Other real tags: e2b, e4b, 12b, 26b, 31b
 
     steps:
       - name: Checkout
