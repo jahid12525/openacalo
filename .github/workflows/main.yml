@@ -10,6 +10,14 @@ on:
 jobs:
   run-openclaw:
     runs-on: ubuntu-latest
+    
+    # -----------------------------------------------------------------
+    # CHANGE THIS to your subfolder path if package.json is not in the root.
+    # For example: working-directory: ./my-subfolder-name
+    # -----------------------------------------------------------------
+    defaults:
+      run:
+        working-directory: .
 
     steps:
       - name: Checkout Repository
@@ -17,6 +25,8 @@ jobs:
 
       # Step 1: Clean up pre-installed software to reclaim ~20GB of disk space
       - name: Free Disk Space
+        # We run this with root level shell so it bypasses working-directory restriction
+        working-directory: .
         run: |
           echo "Disk space before cleanup:"
           df -h
@@ -34,8 +44,7 @@ jobs:
         with:
           node-version: '20'
 
-      # Step 3: Install dependencies using "npm install" 
-      # (This dynamically creates a lockfile and will not fail if package-lock.json is missing)
+      # Step 3: Install dependencies
       - name: Install Project Dependencies
         run: npm install
 
