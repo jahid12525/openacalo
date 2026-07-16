@@ -63,13 +63,17 @@ jobs:
               mode: 'local',
               bind: 'loopback',
               port: 18789,
-              auth: { mode: 'none' } // Disables loopback token auth to prevent channel 401s
+              auth: { mode: 'none' }
             },
             agents: {
               defaults: {
                 model: {
-                  primary: `ollama/${ollamaModel}`,
-                  embedding: `ollama/${ollamaModel}` // Redirects embeddings to Ollama to prevent OpenAI 401s
+                  primary: `ollama/${ollamaModel}`
+                },
+                // Correctly routes embeddings to local Ollama to bypass cloud 401s
+                memorySearch: {
+                  provider: 'ollama',
+                  model: ollamaModel
                 },
                 models: {
                   [`ollama/${ollamaModel}`]: {
