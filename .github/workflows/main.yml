@@ -15,7 +15,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Step 1: Clean up pre-installed software to free up ~20GB of disk space
+      # Step 1: Clean up pre-installed software to reclaim ~20GB of disk space
       - name: Free Disk Space
         run: |
           echo "Disk space before cleanup:"
@@ -28,15 +28,16 @@ jobs:
           echo "Disk space after cleanup:"
           df -h
 
-      # Step 2: Use an up-to-date Node version to clear the deprecation warning
+      # Step 2: Set up Node.js environment
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # Step 3: Install dependencies for your project
+      # Step 3: Install dependencies using "npm install" 
+      # (This dynamically creates a lockfile and will not fail if package-lock.json is missing)
       - name: Install Project Dependencies
-        run: npm ci
+        run: npm install
 
       # Step 4: Install Ollama
       - name: Install Ollama
@@ -62,6 +63,5 @@ jobs:
       # Step 6: Run your application / test suite
       - name: Run OpenClaw
         env:
-          # If your application needs to know where Ollama is running
           OLLAMA_HOST: http://localhost:11434
         run: npm test
