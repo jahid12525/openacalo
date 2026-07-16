@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       openrouter_api_key:
-        description: 'OpenRouter API Key (Required for manual start)'
+        description: 'OpenRouter API Key'
         required: true
         type: string
- 
+  schedule:
+    - cron: '0 */5 * * *'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -23,12 +23,14 @@ jobs:
           node-version: '20'
 
       - name: Install OpenClaw CLI
-        run: npm install -g openclaw
+        run: |
+          npm install -g openclaw
+          # FIX: Forcefully add npm global binary path to system
+          echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
 
       - name: Configure OpenClaw
         run: |
           mkdir -p ~/.openclaw
-          # If triggered by cron, inputs are empty. Fall back to a secret if needed.
           API_KEY="${{ inputs.openrouter_api_key || secrets.OPENROUTER_API_KEY }}"
           
           cat << EOF > ~/.openclaw/openclaw.json
@@ -106,5 +108,5 @@ jobs:
           EOF
 
       - name: Run OpenClaw
-        # Using npx ensures we find the binary regardless of path environment issues
-        run: npx openclaw start
+        # Ekhon path thik kora ache, so eita kaj korbe
+        run: openclaw start
