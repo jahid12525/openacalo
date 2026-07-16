@@ -7,6 +7,8 @@ name: OpenClaw + Gemma 4 Telegram Bot
 # drop the GitHub Actions wrapper entirely.
 on:
   workflow_dispatch: {}
+  schedule:
+    - cron: "0 */5 * * *"
 
 concurrency:
   group: openclaw-gateway
@@ -56,8 +58,7 @@ jobs:
 
       - name: Write OpenClaw config
         run: |
-          mkdir -p "$HOME/.openclaw"
-          cat > "$HOME/.openclaw/openclaw.json" <<EOF
+          cat > "openclaw.json" <<EOF
           {
             "gateway": {
               "mode": "local"
@@ -90,10 +91,10 @@ jobs:
             }
           }
           EOF
-          chmod 600 "$HOME/.openclaw/openclaw.json"
+          chmod 600 "openclaw.json"
 
       - name: Show config being loaded (debug)
-        run: cat "$HOME/.openclaw/openclaw.json"
+        run: cat "openclaw.json"
 
       - name: Set gateway auth token (if provided)
         if: env.GATEWAY_AUTH_TOKEN != ''
