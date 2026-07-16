@@ -57,23 +57,19 @@ jobs:
           const adminId = process.env.ADMIN_TELEGRAM_ID;
           const botToken = process.env.TELEGRAM_BOT_TOKEN;
           const ollamaModel = process.env.OLLAMA_MODEL;
-          const gatewayAuthToken = process.env.GATEWAY_AUTH_TOKEN;
-
-          const gatewayAuth = gatewayAuthToken 
-            ? { mode: 'token', token: gatewayAuthToken } 
-            : { mode: 'none' };
 
           const config = {
             gateway: {
               mode: 'local',
               bind: 'loopback',
               port: 18789,
-              auth: gatewayAuth
+              auth: { mode: 'none' } // Disables loopback token auth to prevent channel 401s
             },
             agents: {
               defaults: {
                 model: {
-                  primary: `ollama/${ollamaModel}`
+                  primary: `ollama/${ollamaModel}`,
+                  embedding: `ollama/${ollamaModel}` // Redirects embeddings to Ollama to prevent OpenAI 401s
                 },
                 models: {
                   [`ollama/${ollamaModel}`]: {
@@ -83,7 +79,6 @@ jobs:
               }
             },
             models: {
-              // 'replace' stops OpenClaw from merging cloud defaults
               mode: 'replace', 
               providers: {
                 ollama: {
