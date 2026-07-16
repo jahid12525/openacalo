@@ -1,65 +1,54 @@
-name: Deploy OpenClaw Telegram Bot
+name: Deploy OpenClaw Gateway with Cloudflare Tunnel
 
 on:
   workflow_dispatch:
     inputs:
       openrouter_api_key:
-        description: 'OpenRouter API Key'
+        description: 'Your OpenRouter API Key (sk-or-...)'
         required: true
         type: string
-  schedule:
-    - cron: '0 */5 * * *'
+      duration:
+        description: 'Keep-alive duration in hours (max 6)'
+        required: false
+        default: '6'
+        type: string
 
 jobs:
-  deploy:
+  run-openclaw:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
-      - name: Install OpenClaw CLI
+      - name: Install OpenClaw CLI and Gateway
         run: |
-          npm install -g openclaw
-          # FIX: Forcefully add npm global binary path to system
-          echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
+          SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest
 
       - name: Configure OpenClaw
         run: |
           mkdir -p ~/.openclaw
-          API_KEY="${{ inputs.openrouter_api_key || secrets.OPENROUTER_API_KEY }}"
-          
-          cat << EOF > ~/.openclaw/openclaw.json
+          cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
               "mode": "local",
               "bind": "loopback",
               "auth": {
                 "token": "openclaw-github-actions-secure-token-2026"
+              },
+              "controlUi": {
+                "dangerouslyAllowHostHeaderOriginFallback": true
               }
             },
             "models": {
               "providers": {
                 "openrouter": {
-                  "apiKey": "$API_KEY"
-                }
-              }
-            },
-            "tools": {
-              "web": {
-                "search": {
-                  "enabled": true,
-                  "provider": "duckduckgo"
-                }
-              },
-              "elevated": {
-                "enabled": true,
-                "allowFrom": {
-                  "telegram": [680349125]
+                  "apiKey": "${{ inputs.openrouter_api_key }}"
                 }
               }
             },
@@ -68,28 +57,8 @@ jobs:
                 "model": {
                   "primary": "openrouter/auto"
                 },
-                "tools": {
-                  "allow": [
-                    "web_search",
-                    "read",
-                    "write",
-                    "apply_patch",
-                    "web_fetch",
-                    "image_analyze",
-                    "edit",
-                    "exec",
-                    "sessions_spawn",
-                    "sessions_send",
-                    "sessions_yield",
-                    "file_fetch",
-                    "file_write",
-                    "cron",
-                    "browser",
-                    "memory_search",
-                    "memory_get",
-                    "create_goal",
-                    "update_goal"
-                  ]
+                "models": {
+                  "openrouter/auto": {}
                 }
               }
             },
@@ -107,6 +76,68 @@ jobs:
           }
           EOF
 
-      - name: Run OpenClaw
-        # Ekhon path thik kora ache, so eita kaj korbe
-        run: openclaw start
+      - name: Install Cloudflare Tunnel (cloudflared)
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+
+      - name: Start OpenClaw Gateway
+        run: |
+          nohup openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
+          
+          echo "Waiting for OpenClaw Gateway to boot..."
+          for i in {1..15}; do
+            if openclaw gateway status 2>/dev/null | grep -q "running"; then
+              echo "Gateway successfully booted!"
+              openclaw gateway status
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          nohup cloudflared tunnel --url http://127.0.0.1:18789 > cloudflared.log 2>&1 &
+          
+          echo "Waiting for Cloudflare Tunnel to generate public link..."
+          sleep 12
+          
+          TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' cloudflared.log | head -n 1)
+          
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "=========================================================================="
+            echo "🚀 OPENCLAW GATEWAY IS LIVE!"
+            echo "🔗 Access Dashboard: $TUNNEL_URL"
+            echo "🔑 Secret Token: openclaw-github-actions-secure-token-2026"
+            echo "=========================================================================="
+          else
+            echo "⚠️ Could not retrieve Cloudflare Tunnel URL automatically."
+            echo "Checking cloudflared logs:"
+            cat cloudflared.log | tail -n 20
+            exit 1
+          fi
+
+      - name: Keep-Alive Daemon & Auto-Device Approver
+        run: |
+          HOURS=${{ inputs.duration }}
+          if [ "$HOURS" -gt 6 ]; then
+            HOURS=6
+          fi
+          TOTAL_SECONDS=$((HOURS * 3600))
+          ELAPSED_SECONDS=0
+          
+          echo "Keeping runner alive for $HOURS hour(s). Monitoring for incoming browser pairing requests..."
+          
+          while [ $ELAPSED_SECONDS -lt $TOTAL_SECONDS ]; do
+            PENDING_ID=$(openclaw devices list 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
+            
+            if [ -n "$PENDING_ID" ]; then
+              echo "🔒 [Auto-Auth] Detected connection request ID: $PENDING_ID"
+              openclaw devices approve "$PENDING_ID"
+              echo "✅ [Auto-Auth] Device successfully paired!"
+            fi
+            
+            sleep 4
+            ELAPSED_SECONDS=$((ELAPSED_SECONDS + 4))
+          done
