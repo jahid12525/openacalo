@@ -15,7 +15,6 @@ jobs:
     timeout-minutes: 340
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      GATEWAY_AUTH_TOKEN: ${{ secrets.GATEWAY_AUTH_TOKEN }}
       ADMIN_TELEGRAM_ID: "680349125"
       OLLAMA_MODEL: "gemma4:e2b"
     steps:
@@ -38,7 +37,7 @@ jobs:
             sleep 1
           done
 
-      - name: Pull Gemma 4 (free, local, no API key)
+      - name: Pull Gemma 4
         run: ollama pull "$OLLAMA_MODEL"
 
       - name: Install OpenClaw
@@ -49,14 +48,9 @@ jobs:
         run: |
           const fs = require('fs');
           const path = require('path');
-
-          const homeDir = process.env.HOME || process.env.USERPROFILE;
+          const homeDir = process.env.HOME;
           const configDir = path.join(homeDir, '.openclaw');
           fs.mkdirSync(configDir, { recursive: true });
-
-          const adminId = process.env.ADMIN_TELEGRAM_ID;
-          const botToken = process.env.TELEGRAM_BOT_TOKEN;
-          const ollamaModel = process.env.OLLAMA_MODEL;
 
           const config = {
             gateway: {
@@ -67,83 +61,29 @@ jobs:
             },
             agents: {
               defaults: {
-                model: {
-                  primary: `ollama/${ollamaModel}`
-                },
-                // Correctly routes embeddings to local Ollama to bypass cloud 401s
-                memorySearch: {
-                  provider: 'ollama',
-                  model: ollamaModel
-                },
-                models: {
-                  [`ollama/${ollamaModel}`]: {
-                    alias: 'gemma'
-                  }
-                }
-              }
-            },
-            models: {
-              mode: 'replace', 
-              providers: {
-                ollama: {
-                  baseUrl: 'http://127.0.0.1:11434'
-                }
+                model: { primary: `ollama/${process.env.OLLAMA_MODEL}` },
+                memorySearch: { provider: 'ollama', model: process.env.OLLAMA_MODEL }
               }
             },
             channels: {
               telegram: {
                 enabled: true,
-                botToken: botToken,
+                botToken: process.env.TELEGRAM_BOT_TOKEN,
                 dmPolicy: 'allowlist',
-                allowFrom: [adminId],
-                groupAllowFrom: [adminId]
+                allowFrom: [`tg:${process.env.ADMIN_TELEGRAM_ID}`],
+                groupAllowFrom: [`tg:${process.env.ADMIN_TELEGRAM_ID}`]
               }
             },
             plugins: {
               entries: {
-                ollama: { enabled: true },
-                openai: { enabled: false },
-                anthropic: { enabled: false },
-                google: { enabled: false },
-                groq: { enabled: false },
-                cohere: { enabled: false }
+                ollama: { enabled: true }
               }
-            },
-            commands: {
-              ownerAllowFrom: [`telegram:${adminId}`]
             }
           };
+          fs.writeFileSync(path.join(configDir, 'openclaw.json'), JSON.stringify(config, null, 2));
 
-          fs.writeFileSync(
-            path.join(configDir, 'openclaw.json'), 
-            JSON.stringify(config, null, 2)
-          );
-
-      - name: Show config being loaded (debug)
-        run: cat "$HOME/.openclaw/openclaw.json"
-
-      - name: Run openclaw gateway
+      - name: Run OpenClaw
         run: |
           nohup openclaw gateway > /tmp/openclaw.log 2>&1 &
-          
-          echo "Waiting for OpenClaw Gateway to start..."
-          SUCCESS=false
-          for i in $(seq 1 30); do
-            if curl -s http://127.0.0.1:18789/health >/dev/null 2>&1 || curl -s http://127.0.0.1:18789 >/dev/null 2>&1; then
-              echo "OpenClaw Gateway started successfully!"
-              SUCCESS=true
-              break
-            fi
-            sleep 1
-          done
-          
-          if [ "$SUCCESS" = "false" ]; then
-            echo "Error: OpenClaw Gateway failed to start. Tail of /tmp/openclaw.log:"
-            tail -n 50 /tmp/openclaw.log
-            exit 1
-          fi
-
-      - name: Keep workflow running
-        run: |
-          echo "Bot is now active on Telegram. Keeping runner alive..."
+          sleep 10
           tail -f /tmp/openclaw.log
