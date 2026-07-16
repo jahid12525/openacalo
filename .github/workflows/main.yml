@@ -1,89 +1,89 @@
-name: OpenClaw CI
+name: OpenClaw + Gemma 4 Telegram Bot
+
+# GitHub Actions cannot host a true always-on process — jobs are killed at
+# the timeout below no matter what. This workflow relaunches itself every
+# 5 hours via cron so the bot comes back up shortly after each kill. If you
+# want a bot that's actually always online with no gaps, run this same
+# install script on a cheap always-on VPS instead (systemd/Docker) and
+# drop the GitHub Actions wrapper entirely.
+
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 */5 * * *"   # restarts every 5 hours, before the 6h job cap
+
+concurrency:
+  group: openclaw-gateway
+  cancel-in-progress: true
 
 jobs:
   run-openclaw:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 340   # stay under GitHub's 360-minute (6h) hard cap
 
-    # -----------------------------------------------------------------
-    # CHANGE THIS to your subfolder path if package.json is not in the root.
-    # For example: working-directory: ./my-subfolder-name
-    # -----------------------------------------------------------------
-    defaults:
-      run:
-        working-directory: .
+    env:
+      # Set this in: repo Settings -> Secrets and variables -> Actions -> New repository secret
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      # Hard-coded per your request. This only needs to be a plain Telegram
+      # numeric user ID (not a secret in itself), used to allow-list who the
+      # bot will talk to. Get yours by messaging @userinfobot or your own
+      # bot once and checking `openclaw logs --follow`.
+      ADMIN_TELEGRAM_ID: "123456789"   # <-- replace with your real numeric Telegram user ID
+      OLLAMA_MODEL: "gemma4:2b"        # swap for gemma4:4b / gemma4:27b if you need more capability
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Step 1: Clean up pre-installed software to reclaim ~20GB of disk space
-      - name: Free Disk Space
-        run: |
-          echo "Disk space before cleanup:"
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          echo "Disk space after cleanup:"
-          df -h
-
-      # Step 2: Set up Node.js environment
-      # Node 20 is deprecated on GitHub-hosted runners as of Sept 2025 — use current LTS.
-      - name: Setup Node.js
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
-          # NOTE: 'cache: npm' requires a committed package-lock.json/yarn.lock.
-          # This repo doesn't have one yet, so caching is left off for now.
-          # Once you commit a lockfile, add `cache: 'npm'` back here and switch
-          # the next step to `npm ci` for faster, reproducible installs.
+          node-version: "22"
 
-      # Step 3: Install dependencies
-      # Using `npm install` because no package-lock.json is committed to this repo.
-      # `npm ci` would fail without one. Once a lockfile exists, prefer `npm ci`.
-      - name: Install Project Dependencies
-        run: npm install
-
-      # Step 4: Install Ollama
       - name: Install Ollama
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
+        run: curl -fsSL https://ollama.com/install.sh | sh
 
-      # Step 5: Spin up Ollama and pull the model, with a bounded wait and logging
-      - name: Start Ollama & Pull Model
+      - name: Start Ollama server in background
         run: |
-          # Start the Ollama server in the background, detached, with logs captured
-          nohup ollama serve > ollama.log 2>&1 &
-          echo $! > ollama.pid
-
-          echo "Waiting for Ollama to start..."
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
           for i in $(seq 1 30); do
-            if curl -s http://localhost:11434/ > /dev/null; then
-              echo "Ollama is running!"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "Ollama failed to start within 60 seconds. Logs:"
-              cat ollama.log
-              exit 1
-            fi
-            sleep 2
+            curl -s http://localhost:11434 >/dev/null && break
+            sleep 1
           done
 
-          # Pull the model, failing loudly if it doesn't succeed
-          ollama pull gemma4:e4b
+      - name: Pull Gemma 4 (free, local, no API key)
+        run: ollama pull "$OLLAMA_MODEL"
 
-      # Step 6: Run your application / test suite
-      - name: Run OpenClaw
-        env:
-          OLLAMA_HOST: http://localhost:11434
-        run: npm test
+      - name: Install OpenClaw
+        run: npm install -g openclaw@latest
+
+      - name: Write OpenClaw config
+        run: |
+          mkdir -p "$HOME/.openclaw"
+          cat > "$HOME/.openclaw/openclaw.json" <<EOF
+          {
+            agents: {
+              defaults: {
+                model: {
+                  primary: "ollama/${OLLAMA_MODEL}",
+                },
+              },
+            },
+            providers: {
+              ollama: {
+                baseUrl: "http://localhost:11434",
+              },
+            },
+            channels: {
+              telegram: {
+                enabled: true,
+                botToken: "${TELEGRAM_BOT_TOKEN}",
+                dmPolicy: "allowlist",
+                allowFrom: ["${ADMIN_TELEGRAM_ID}"],
+              },
+            },
+          }
+          EOF
+
+      - name: Run OpenClaw Gateway
+        run: openclaw gateway start --foreground
