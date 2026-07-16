@@ -43,6 +43,9 @@ jobs:
               "bind": "loopback",
               "auth": {
                 "token": "openclaw-github-actions-secure-token-2026"
+              },
+              "controlUi": {
+                "dangerouslyAllowHostHeaderOriginFallback": true
               }
             },
             "agents": {
