@@ -10,29 +10,33 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24' # OpenClaw requires Node 24+ (or Node 22) to run properly
 
-      - name: Install OpenClaw
-        run: npm install -g openclaw
+      - name: Install OpenClaw Locally
+        # Installing locally prevents PATH and permission issues on the runner
+        run: npm install openclaw@latest
 
       - name: Configure OpenClaw and OpenRouter
         run: |
           mkdir -p ~/.openclaw
-          # Inject the OpenClaw configuration with your API key
+          # Write the official OpenRouter config to openclaw.json
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
-            "models": {
-              "providers": {
-                "openrouter": {
-                  "apiKey": "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"
+            "env": {
+              "OPENROUTER_API_KEY": "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"
+            },
+            "agents": {
+              "defaults": {
+                "model": {
+                  "primary": "openrouter/openrouter/auto"
+                },
+                "models": {
+                  "openrouter/openrouter/auto": {}
                 }
               }
             }
           }
           EOF
-          
-          # Initialize OpenClaw baseline setup silently using npx to avoid PATH issues
-          npx openclaw setup --baseline --non-interactive || true
 
       - name: Install Cloudflare Tunnel (cloudflared)
         run: |
@@ -41,22 +45,21 @@ jobs:
 
       - name: Start OpenClaw Gateway
         run: |
-          # Start the OpenClaw Gateway in the background using npx
-          nohup npx openclaw gateway > openclaw.log 2>&1 &
-          sleep 10 # Allow time for the gateway to boot up
+          # Start the gateway locally on port 18789
+          nohup npx openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
+          sleep 15 # Give the server ample time to spin up
 
       - name: Start Cloudflare Tunnel
         run: |
-          # Start the free Cloudflare Quick Tunnel pointing to the Gateway
+          # Start the free tunnel mapping to localhost:18789
           nohup cloudflared tunnel --url http://localhost:18789 > tunnel.log 2>&1 &
-          sleep 10 # Allow time for Cloudflare to assign a public URL
+          sleep 10 # Wait for the public URL to resolve
           
           echo "==================================================================="
           echo "🚀 OPENCLAW DASHBOARD IS LIVE!"
           echo "🌐 Access your web interface here:"
           grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log
           echo "==================================================================="
-          echo "Note: The GitHub Action will timeout and terminate after 6 hours."
           
-          # Stream the logs to keep the Action running and visible
+          # Output logs in real-time to keep the action alive
           tail -f openclaw.log tunnel.log
