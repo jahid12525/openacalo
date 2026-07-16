@@ -1,90 +1,67 @@
-name: Deploy OpenClaw with Gemma 4 and Telegram
+name: OpenClaw CI
 
 on:
-  workflow_dispatch: # Allows manual trigger from the Actions tab
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   run-openclaw:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # Keep the action running for up to 6 hours (max free tier length)
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      # Step 1: Clean up pre-installed software to free up ~20GB of disk space
+      - name: Free Disk Space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          echo "Disk space after cleanup:"
+          df -h
+
+      # Step 2: Use an up-to-date Node version to clear the deprecation warning
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
+      # Step 3: Install dependencies for your project
+      - name: Install Project Dependencies
+        run: npm ci
+
+      # Step 4: Install Ollama
       - name: Install Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
 
-      - name: Start Ollama Daemon & Pull Gemma 4
+      # Step 5: Spin up Ollama and Pull the Gemma 4 Edge Model
+      - name: Start Ollama & Pull Model
         run: |
-          # Start Ollama service in the background
-          ollama serve > /dev/null 2>&1 &
+          # Start the Ollama server in the background
+          ollama serve &
           
-          # Wait for Ollama to spin up
-          echo "Waiting for Ollama to initialize..."
-          until curl -s http://127.0.0.1:11434/ > /dev/null; do sleep 2; done
-          
-          # Pull Gemma 4 model (Free local model)
-          echo "Pulling Gemma 4 model..."
-          ollama pull gemma4
-
-      - name: Install OpenClaw
-        run: |
-          echo "Installing OpenClaw globally..."
-          npm install -g openclaw
-
-      - name: Configure Telegram Channel & Model Defaults
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
-        run: |
-          # Initialize baseline directories
-          mkdir -p ~/.openclaw
-          
-          # Set local model defaults
-          openclaw configure --section models --model gemma4 --yes
-          
-          # Safety checks for secrets
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "::error::TELEGRAM_BOT_TOKEN secret is missing. Please add it to repository secrets."
-            exit 1
-          fi
-          
-          if [ -z "$TELEGRAM_USER_ID" ]; then
-            echo "::error::TELEGRAM_USER_ID secret is missing. Please add it to repository secrets."
-            exit 1
-          fi
-          
-          # Configure Telegram with both the Bot Token and the authorized User ID
-          openclaw configure --section channels --channel telegram \
-            --token "$TELEGRAM_BOT_TOKEN" \
-            --allowFrom "$TELEGRAM_USER_ID" \
-            --yes
-
-      - name: Launch OpenClaw Gateway Agent
-        run: |
-          echo "Launching OpenClaw Daemon in headless mode with Gemma 4..."
-          # Start the daemon
-          openclaw launch --model gemma4 --yes &
-          
-          echo "--------------------------------------------------------"
-          echo "🚀 OpenClaw Agent is up and running!"
-          echo "Connected Model: Gemma 4 (Free, local)"
-          echo "Connected Channel: Telegram Bot (Owner-locked)"
-          echo "Keep-alive mechanism activated. Send a message to your bot!"
-          echo "--------------------------------------------------------"
-          
-          # Keep runner alive so background tasks don't stop
-          while true; do
-            if ! pgrep -x "openclaw" > /dev/null; then
-              echo "OpenClaw process stopped unexpectedly!"
-              exit 1
-            fi
-            sleep 30
+          # Wait for the Ollama server to respond
+          echo "Waiting for Ollama to start..."
+          until curl -s http://localhost:11434/ > /dev/null; do
+            sleep 2
           done
+          echo "Ollama is running!"
+          
+          # Pull the resource-friendly Gemma 4 Edge model
+          ollama pull gemma4:e4b
+
+      # Step 6: Run your application / test suite
+      - name: Run OpenClaw
+        env:
+          # If your application needs to know where Ollama is running
+          OLLAMA_HOST: http://localhost:11434
+        run: npm test
