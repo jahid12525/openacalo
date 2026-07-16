@@ -37,6 +37,9 @@ jobs:
           mkdir -p ~/.openclaw
           cat > ~/.openclaw/openclaw.json <<'EOF'
           {
+            "gateway": {
+              "mode": "local"
+            },
             "agent": {
               "model": "${{ vars.OPENCLAW_MODEL || 'anthropic/claude-sonnet-4-5' }}"
             }
@@ -50,7 +53,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          nohup openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
+          nohup openclaw gateway --port 18789 --verbose --allow-unconfigured > openclaw.log 2>&1 &
           echo "Waiting for gateway to come up..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:18789/ > /dev/null; then
