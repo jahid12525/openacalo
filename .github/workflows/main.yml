@@ -1,62 +1,62 @@
-name: OpenClaw Cloudflare Tunnel
+name: OpenClaw Web Interface
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows you to trigger the run manually
 
 jobs:
-  openclaw:
+  deploy-openclaw:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git curl jq
-
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '20'
 
-      - name: Clone OpenClaw
-        run: |
-          git clone https://github.com/openclaw/openclaw.git
-          cd openclaw
-          npm install
+      - name: Install OpenClaw
+        run: npm install -g openclaw
 
-      - name: Create .env
+      - name: Configure OpenClaw and OpenRouter
         run: |
-          cd openclaw
-          cat > .env <<EOF
-          OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
-          OPENAI_BASE_URL=https://openrouter.ai/api/v1
+          mkdir -p ~/.openclaw
+          # Inject the OpenClaw configuration with your API key
+          cat << 'EOF' > ~/.openclaw/openclaw.json
+          {
+            "models": {
+              "providers": {
+                "openrouter": {
+                  "apiKey": "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"
+                }
+              }
+            }
+          }
           EOF
+          
+          # Initialize OpenClaw baseline setup silently
+          openclaw setup --baseline --non-interactive || true
 
-      - name: Download cloudflared
+      - name: Install Cloudflare Tunnel (cloudflared)
         run: |
-          wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
 
-      - name: Start OpenClaw
+      - name: Start OpenClaw Gateway
         run: |
-          cd openclaw
-          npm run dev > ../openclaw.log 2>&1 &
-          sleep 20
+          # Start the OpenClaw Gateway in the background (runs on default port 18789)
+          nohup openclaw gateway > openclaw.log 2>&1 &
+          sleep 10 # Allow time for the gateway to boot up
 
       - name: Start Cloudflare Tunnel
         run: |
-          cloudflared tunnel --url http://localhost:3000 > tunnel.log 2>&1 &
-          sleep 10
-
-          echo "Tunnel URL:"
-          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' tunnel.log | head -1
-
-      - name: Keep Runner Alive
-        run: |
-          while true; do
-            sleep 300
-          done
+          # Start the free Cloudflare Quick Tunnel pointing to the Gateway
+          nohup cloudflared tunnel --url http://localhost:18789 > tunnel.log 2>&1 &
+          sleep 10 # Allow time for Cloudflare to assign a public URL
+          
+          echo "==================================================================="
+          echo "🚀 OPENCLAW DASHBOARD IS LIVE!"
+          echo "🌐 Access your web interface here:"
+          grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log
+          echo "==================================================================="
+          echo "Note: The GitHub Action will timeout and terminate after 6 hours."
+          
+          # Stream the logs to keep the Action running and visible
+          tail -f openclaw.log tunnel.log
