@@ -61,6 +61,24 @@ jobs:
                   "openrouter/auto": {}
                 }
               }
+            },
+            "channels": {
+              "telegram": {
+                "enabled": true,
+                "botToken": "8854553209:AAH-VwkbH58qEA3pCq2oi1V4yqZ8AIO60xI",
+                "allowedUsers": [680349125],
+                "adminUser": 680349125
+              }
+            },
+            "plugins": {
+              "allow": ["telegram", "browser"]
+            },
+            "browser": {
+              "enabled": true
+            },
+            "tools": {
+              "profile": "full",
+              "planTool": true
             }
           }
           EOF
