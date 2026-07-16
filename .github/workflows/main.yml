@@ -82,5 +82,16 @@ jobs:
           }
           EOF
 
+      - name: Show config being loaded (debug)
+        run: cat "$HOME/.openclaw/openclaw.json"
+
+      - name: Diagnose config with openclaw doctor
+        run: |
+          openclaw doctor --fix || true
+          echo "----- config after doctor --fix -----"
+          cat "$HOME/.openclaw/openclaw.json" || true
+          echo "----- .bak backup if present -----"
+          cat "$HOME/.openclaw/openclaw.json.bak" 2>/dev/null || echo "(no .bak file)"
+
       - name: Run OpenClaw Gateway
         run: openclaw gateway
