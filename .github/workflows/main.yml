@@ -26,9 +26,10 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install OpenClaw CLI and Gateway
+      - name: Install OpenClaw CLI and Dependencies
         run: |
           SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest
+          npx playwright install-deps || true
 
       - name: Configure OpenClaw
         run: |
@@ -59,7 +60,25 @@ jobs:
                 },
                 "models": {
                   "openrouter/auto": {}
+                },
+                "tools": {
+                  "profile": "full",
+                  "allow": ["*"]
                 }
+              }
+            },
+            "tools": {
+              "profile": "full",
+              "allow": ["*"],
+              "deny": [],
+              "web": {
+                "search": {
+                  "provider": "duckduckgo"
+                }
+              },
+              "exec": {
+                "ask": "never",
+                "security": "full"
               }
             },
             "commands": {
