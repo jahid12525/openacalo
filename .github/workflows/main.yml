@@ -1,70 +1,113 @@
-name: OpenClaw Web Interface
+name: Deploy OpenClaw Gateway with Cloudflare Tunnel
 
 on:
-  workflow_dispatch: # Allows you to trigger the run manually
+  workflow_dispatch:
+    inputs:
+      openrouter_api_key:
+        description: 'Your OpenRouter API Key (sk-or-...)'
+        required: true
+        type: string
+      duration:
+        description: 'Keep-alive duration in hours (max 6)'
+        required: false
+        default: '6'
+        type: string
 
 jobs:
-  deploy-openclaw:
+  run-openclaw:
     runs-on: ubuntu-latest
+
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24' # Node 24 is highly recommended for OpenClaw
+          node-version: '24'
 
-      - name: Install OpenClaw Globally
-        run: npm install -g openclaw@latest
-
-      - name: Add npm global bin to PATH
-        # This ensures the 'openclaw' command is accessible to background processes
-        run: echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
-
-      - name: Initialize OpenClaw Baseline
-        # Writes the baseline local mode configs automatically
-        run: openclaw setup --baseline --non-interactive
-
-      - name: Configure OpenClaw & OpenRouter API Key
+      - name: Install OpenClaw CLI and Gateway
         run: |
-          # Ensure gateway is configured correctly through CLI
-          openclaw config set gateway.mode "local"
-          openclaw config set gateway.bind "loopback"
-          
-          # Set a static security token so you can authenticate over the Cloudflare tunnel
-          openclaw config set gateway.auth.token "openclaw-github-actions-secure-token-2026"
-          
-          # Set OpenRouter as your default model provider
-          openclaw config set model.primary "openrouter/openrouter/auto"
-          
-          # Securely write your API key to the global .env file
+          SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest
+
+      - name: Configure OpenClaw
+        run: |
           mkdir -p ~/.openclaw
-          echo "OPENROUTER_API_KEY=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" >> ~/.openclaw/.env
+          cat << 'EOF' > ~/.openclaw/openclaw.json
+          {
+            "env": {
+              "OPENROUTER_API_KEY": "${{ inputs.openrouter_api_key }}"
+            },
+            "gateway": {
+              "mode": "local",
+              "bind": "loopback",
+              "auth": {
+                "token": "openclaw-github-actions-secure-token-2026"
+              }
+            },
+            "agents": {
+              "defaults": {
+                "model": {
+                  "primary": "openrouter/openrouter/auto"
+                },
+                "models": {
+                  "openrouter/openrouter/auto": {},
+                  "openrouter/auto": {}
+                }
+              }
+            }
+          }
+          EOF
 
       - name: Install Cloudflare Tunnel (cloudflared)
         run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared-linux-amd64.deb
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
 
       - name: Start OpenClaw Gateway
         run: |
-          # Start the gateway in the foreground using the proper CLI command
-          nohup openclaw gateway run --port 18789 > openclaw.log 2>&1 &
-          sleep 10 # Let the service boot up
+          nohup openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
+          
+          echo "Waiting for OpenClaw Gateway to boot..."
+          for i in {1..15}; do
+            if openclaw gateway status 2>/dev/null | grep -q "running"; then
+              echo "Gateway successfully booted!"
+              openclaw gateway status
+              break
+            fi
+            sleep 2
+          done
 
       - name: Start Cloudflare Tunnel
         run: |
-          # Start the free tunnel mapping to the gateway
-          nohup cloudflared tunnel --url http://localhost:18789 > tunnel.log 2>&1 &
-          sleep 10 # Wait for the public URL to resolve
+          nohup cloudflared tunnel --url http://127.0.0.1:18789 > cloudflared.log 2>&1 &
           
-          # Extract the generated tunnel link
-          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          echo "Waiting for Cloudflare Tunnel to generate public link..."
+          sleep 12
           
-          echo "==================================================================="
-          echo "🚀 OPENCLAW DASHBOARD IS LIVE!"
-          echo "🌐 Access your web interface here (token pre-authenticated):"
-          echo "${TUNNEL_URL}/?token=openclaw-github-actions-secure-token-2026"
-          echo "==================================================================="
-          echo "Note: The GitHub Action will timeout and terminate after 6 hours."
+          TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' cloudflared.log | head -n 1)
           
-          # Stream the logs to keep the Action running
-          tail -f openclaw.log tunnel.log
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "=========================================================================="
+            echo "🚀 OPENCLAW GATEWAY IS LIVE!"
+            echo "🔗 Access Dashboard: $TUNNEL_URL"
+            echo "🔑 Secret Token: openclaw-github-actions-secure-token-2026"
+            echo "=========================================================================="
+          else
+            echo "⚠️ Could not retrieve Cloudflare Tunnel URL automatically."
+            echo "Checking cloudflared logs:"
+            cat cloudflared.log | tail -n 20
+            exit 1
+          fi
+
+      - name: Keep-Alive Daemon
+        run: |
+          HOURS=${{ inputs.duration }}
+          # Limit to maximum 6 hours to prevent GitHub runner timeouts
+          if [ "$HOURS" -gt 6 ]; then
+            HOURS=6
+          fi
+          SECONDS=$((HOURS * 3600))
+          echo "Keeping runner alive for $HOURS hour(s) ($SECONDS seconds)..."
+          sleep $SECONDS
