@@ -10,6 +10,7 @@ name: OpenClaw + Gemma 4 Telegram Bot
 on:
   workflow_dispatch: {}
   
+
 concurrency:
   group: openclaw-gateway
   cancel-in-progress: true
@@ -60,6 +61,9 @@ jobs:
           mkdir -p "$HOME/.openclaw"
           cat > "$HOME/.openclaw/openclaw.json" <<EOF
           {
+            gateway: {
+              mode: "local",
+            },
             agents: {
               defaults: {
                 model: {
@@ -84,4 +88,4 @@ jobs:
           EOF
 
       - name: Run OpenClaw Gateway
-        run: openclaw gateway start --foreground
+        run: openclaw gateway
