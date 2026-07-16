@@ -10,33 +10,34 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24' # OpenClaw requires Node 24+ (or Node 22) to run properly
+          node-version: '24' # Node 24 is highly recommended for OpenClaw
 
-      - name: Install OpenClaw Locally
-        # Installing locally prevents PATH and permission issues on the runner
-        run: npm install openclaw@latest
+      - name: Install OpenClaw Globally
+        run: npm install -g openclaw@latest
 
-      - name: Configure OpenClaw and OpenRouter
+      - name: Add npm global bin to PATH
+        # This ensures the 'openclaw' command is accessible to background processes
+        run: echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
+
+      - name: Initialize OpenClaw Baseline
+        # Writes the baseline local mode configs automatically
+        run: openclaw setup --baseline --non-interactive
+
+      - name: Configure OpenClaw & OpenRouter API Key
         run: |
+          # Ensure gateway is configured correctly through CLI
+          openclaw config set gateway.mode "local"
+          openclaw config set gateway.bind "loopback"
+          
+          # Set a static security token so you can authenticate over the Cloudflare tunnel
+          openclaw config set gateway.auth.token "openclaw-github-actions-secure-token-2026"
+          
+          # Set OpenRouter as your default model provider
+          openclaw config set model.primary "openrouter/openrouter/auto"
+          
+          # Securely write your API key to the global .env file
           mkdir -p ~/.openclaw
-          # Write the official OpenRouter config to openclaw.json
-          cat << 'EOF' > ~/.openclaw/openclaw.json
-          {
-            "env": {
-              "OPENROUTER_API_KEY": "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"
-            },
-            "agents": {
-              "defaults": {
-                "model": {
-                  "primary": "openrouter/openrouter/auto"
-                },
-                "models": {
-                  "openrouter/openrouter/auto": {}
-                }
-              }
-            }
-          }
-          EOF
+          echo "OPENROUTER_API_KEY=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" >> ~/.openclaw/.env
 
       - name: Install Cloudflare Tunnel (cloudflared)
         run: |
@@ -45,21 +46,25 @@ jobs:
 
       - name: Start OpenClaw Gateway
         run: |
-          # Start the gateway locally on port 18789
-          nohup npx openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
-          sleep 15 # Give the server ample time to spin up
+          # Start the gateway in the foreground using the proper CLI command
+          nohup openclaw gateway run --port 18789 > openclaw.log 2>&1 &
+          sleep 10 # Let the service boot up
 
       - name: Start Cloudflare Tunnel
         run: |
-          # Start the free tunnel mapping to localhost:18789
+          # Start the free tunnel mapping to the gateway
           nohup cloudflared tunnel --url http://localhost:18789 > tunnel.log 2>&1 &
           sleep 10 # Wait for the public URL to resolve
           
+          # Extract the generated tunnel link
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          
           echo "==================================================================="
           echo "🚀 OPENCLAW DASHBOARD IS LIVE!"
-          echo "🌐 Access your web interface here:"
-          grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log
+          echo "🌐 Access your web interface here (token pre-authenticated):"
+          echo "${TUNNEL_URL}/?token=openclaw-github-actions-secure-token-2026"
           echo "==================================================================="
+          echo "Note: The GitHub Action will timeout and terminate after 6 hours."
           
-          # Output logs in real-time to keep the action alive
+          # Stream the logs to keep the Action running
           tail -f openclaw.log tunnel.log
