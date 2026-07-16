@@ -1,90 +1,42 @@
-name: OpenClaw + Gemma 4 Telegram Bot
-
+name: Run OpenClaw
 on:
-  workflow_dispatch: {}
-  schedule:
-    - cron: "0 */5 * * *"
-
-concurrency:
-  group: openclaw-gateway
-  cancel-in-progress: true
+  workflow_dispatch:
 
 jobs:
   run-openclaw:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
-    env:
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      ADMIN_TELEGRAM_ID: "680349125"
-      OLLAMA_MODEL: "gemma4:e2b"
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-
-      - name: Install Ollama
-        run: curl -fsSL https://ollama.com/install.sh | sh
-
-      - name: Start Ollama server in background
-        run: |
-          nohup ollama serve > /tmp/ollama.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -s http://localhost:11434 >/dev/null && break
-            sleep 1
-          done
-
-      - name: Pull Gemma 4
-        run: ollama pull "$OLLAMA_MODEL"
+          node-version: '20'
 
       - name: Install OpenClaw
-        run: npm install -g openclaw@latest
-
-      - name: Write OpenClaw config
-        shell: node {0}
         run: |
-          const fs = require('fs');
-          const path = require('path');
-          const homeDir = process.env.HOME;
-          const configDir = path.join(homeDir, '.openclaw');
-          fs.mkdirSync(configDir, { recursive: true });
+          npm install -g openclaw
+          # Run install/setup if required by OpenClaw to prepare the interface
+          # openclaw init 
 
-          const config = {
-            gateway: {
-              mode: 'local',
-              bind: 'loopback',
-              port: 18789,
-              auth: { mode: 'none' }
-            },
-            agents: {
-              defaults: {
-                model: {
-                  primary: process.env.OLLAMA_MODEL
-                }
-              }
-            },
-            channels: {
-              telegram: {
-                enabled: true,
-                botToken: process.env.TELEGRAM_BOT_TOKEN,
-                dmPolicy: 'allowlist',
-                allowFrom: [`tg:${process.env.ADMIN_TELEGRAM_ID}`],
-                groupAllowFrom: [`tg:${process.env.ADMIN_TELEGRAM_ID}`]
-              }
-            },
-            plugins: {
-              entries: {
-                ollama: { enabled: true }
-              }
-            }
-          };
-          fs.writeFileSync(path.join(configDir, 'openclaw.json'), JSON.stringify(config, null, 2));
-
-      - name: Run OpenClaw
+      - name: Start OpenClaw
         run: |
-          nohup openclaw gateway > /tmp/openclaw.log 2>&1 &
-          sleep 10
-          tail -f /tmp/openclaw.log
+          # Start the process in the background
+          # Ensure it is bound to 0.0.0.0 so the tunnel can reach it
+          openclaw start --port 8080 --host 0.0.0.0 & 
+          
+      - name: Setup cloudflared
+        uses: AnimMouse/setup-cloudflared@v2
+
+      - name: Setup cloudflared tunnel
+        uses: AnimMouse/setup-cloudflared/tunnel@v2
+        with:
+          url: http://localhost:8080
+
+      - name: Keep alive
+        run: |
+          echo "OpenClaw is running."
+          echo "Access the web interface via the URL provided above."
+          # Keeps the action running so the tunnel stays open
+          sleep 6h
