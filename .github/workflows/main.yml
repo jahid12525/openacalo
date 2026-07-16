@@ -7,7 +7,7 @@ on:
         description: 'OpenRouter API Key (Required for manual start)'
         required: true
         type: string
-
+ 
 
 jobs:
   deploy:
@@ -106,4 +106,5 @@ jobs:
           EOF
 
       - name: Run OpenClaw
-        run: openclaw start
+        # Using npx ensures we find the binary regardless of path environment issues
+        run: npx openclaw start
