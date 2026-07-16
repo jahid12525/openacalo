@@ -24,7 +24,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
 
       - name: Install OpenClaw CLI and Gateway
         run: |
@@ -89,19 +89,13 @@ jobs:
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-      - name: Start OpenClaw Gateway
+      - name: Start OpenClaw
         run: |
-          nohup openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
+          nohup openclaw start --port 18789 --verbose > openclaw.log 2>&1 &
           
-          echo "Waiting for OpenClaw Gateway to boot..."
-          for i in {1..15}; do
-            if openclaw gateway status 2>/dev/null | grep -q "running"; then
-              echo "Gateway successfully booted!"
-              openclaw gateway status
-              break
-            fi
-            sleep 2
-          done
+          echo "Waiting for OpenClaw to boot..."
+          sleep 10
+          openclaw status || true
 
       - name: Start Cloudflare Tunnel
         run: |
@@ -114,7 +108,7 @@ jobs:
           
           if [ -n "$TUNNEL_URL" ]; then
             echo "=========================================================================="
-            echo "🚀 OPENCLAW GATEWAY IS LIVE!"
+            echo "🚀 OPENCLAW IS LIVE!"
             echo "🔗 Access Dashboard: $TUNNEL_URL"
             echo "🔑 Secret Token: openclaw-github-actions-secure-token-2026"
             echo "=========================================================================="
@@ -148,3 +142,11 @@ jobs:
             sleep 4
             ELAPSED_SECONDS=$((ELAPSED_SECONDS + 4))
           done
+
+      - name: Print Debug Logs on Failure
+        if: always()
+        run: |
+          echo "=== OpenClaw Log Output ==="
+          cat openclaw.log || echo "No OpenClaw log found."
+          echo "=== Cloudflare Log Output ==="
+          cat cloudflared.log || echo "No Cloudflare log found."
