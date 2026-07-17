@@ -1,4 +1,4 @@
-name: Deploy OpenClaw Gateway with Gemini API Key Pool
+name: Deploy OpenClaw Gateway with Gemini API Pool
 
 on:
   workflow_dispatch:
@@ -27,16 +27,7 @@ jobs:
 
     env:
       OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
-      GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
-      GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
-      GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
-      GEMINI_API_KEY_4: ${{ secrets.GEMINI_API_KEY_4 }}
-      GEMINI_API_KEY_5: ${{ secrets.GEMINI_API_KEY_5 }}
-      GEMINI_API_KEY_6: ${{ secrets.GEMINI_API_KEY_6 }}
-      GEMINI_API_KEY_7: ${{ secrets.GEMINI_API_KEY_7 }}
-      GEMINI_API_KEY_8: ${{ secrets.GEMINI_API_KEY_8 }}
-      GEMINI_API_KEY_9: ${{ secrets.GEMINI_API_KEY_9 }}
-      GEMINI_API_KEY_10: ${{ secrets.GEMINI_API_KEY_10 }}
+      GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
 
     steps:
       - name: Checkout code
@@ -59,6 +50,11 @@ jobs:
             exit 1
           fi
 
+          if [ -z "${GEMINI_API_KEYS:-}" ]; then
+            echo "::error::Configure GEMINI_API_KEYS"
+            exit 1
+          fi
+
           if ! [[ "$REQUESTED_HOURS" =~ ^[1-6]$ ]]; then
             echo "::error::Duration must be an integer from 1 to 6"
             exit 1
@@ -66,22 +62,23 @@ jobs:
 
           KEY_COUNT=0
 
-          for INDEX in {1..10}; do
-            VARIABLE="GEMINI_API_KEY_${INDEX}"
-            KEY="${!VARIABLE:-}"
+          while IFS= read -r KEY || [ -n "$KEY" ]; do
+            KEY="${KEY//$'\r'/}"
+            KEY="${KEY#"${KEY%%[![:space:]]*}"}"
+            KEY="${KEY%"${KEY##*[![:space:]]}"}"
 
-            if [ -n "$KEY" ]; then
-              echo "::add-mask::$KEY"
-              KEY_COUNT=$((KEY_COUNT + 1))
-            fi
-          done
+            [ -n "$KEY" ] || continue
+
+            echo "::add-mask::$KEY"
+            KEY_COUNT=$((KEY_COUNT + 1))
+          done <<< "$GEMINI_API_KEYS"
 
           if [ "$KEY_COUNT" -eq 0 ]; then
-            echo "::error::Configure at least one GEMINI_API_KEY_N secret"
+            echo "::error::GEMINI_API_KEYS contains no API keys"
             exit 1
           fi
 
-          echo "Found $KEY_COUNT configured Gemini API key(s)"
+          echo "Found $KEY_COUNT Gemini API key(s)"
 
       - name: Install OpenClaw
         shell: bash
@@ -102,15 +99,16 @@ jobs:
 
           SELECTED_KEY=""
           SELECTED_INDEX=""
+          INDEX=0
 
-          for INDEX in {1..10}; do
-            VARIABLE="GEMINI_API_KEY_${INDEX}"
-            KEY="${!VARIABLE:-}"
+          while IFS= read -r KEY || [ -n "$KEY" ]; do
+            KEY="${KEY//$'\r'/}"
+            KEY="${KEY#"${KEY%%[![:space:]]*}"}"
+            KEY="${KEY%"${KEY##*[![:space:]]}"}"
 
-            if [ -z "$KEY" ]; then
-              continue
-            fi
+            [ -n "$KEY" ] || continue
 
+            INDEX=$((INDEX + 1))
             echo "::add-mask::$KEY"
             echo "Testing Gemini API key $INDEX..."
 
@@ -153,14 +151,15 @@ jobs:
 
             ERROR_MESSAGE="$(
               jq -r '.error.message // "Request failed"' \
-                "$RESPONSE_FILE" 2>/dev/null || echo "Request failed"
+                "$RESPONSE_FILE" 2>/dev/null ||
+                echo "Request failed"
             )"
 
-            echo "::warning::Gemini API key $INDEX failed with HTTP ${HTTP_CODE:-000}: $ERROR_MESSAGE"
-          done
+            echo "::warning::Gemini key $INDEX failed with HTTP ${HTTP_CODE:-000}: $ERROR_MESSAGE"
+          done <<< "$GEMINI_API_KEYS"
 
           if [ -z "$SELECTED_KEY" ]; then
-            echo "::error::None of the configured Gemini API keys worked"
+            echo "::error::None of the Gemini API keys worked"
             exit 1
           fi
 
