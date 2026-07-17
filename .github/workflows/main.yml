@@ -11,9 +11,6 @@ on:
 
 jobs:
   run-openclaw:
-    # IMPORTANT: Standard GitHub hosted runners only have ~7GB of RAM.
-    # Running gemma4:e2b (7.2GB) will likely cause an Out-Of-Memory error.
-    # Change 'ubuntu-latest' to 'self-hosted' if you are using your own GPU machine.
     runs-on: ubuntu-latest
 
     steps:
@@ -40,9 +37,9 @@ jobs:
           # Wait for Ollama to boot
           sleep 5
           
-          # Pull the requested Gemma 4 model
-          echo "Pulling gemma4:e2b..."
-          ollama pull gemma4:e2b
+          # Pull the requested lightweight model
+          echo "Pulling llama3.2:1b..."
+          ollama pull llama3.2:1b
 
       - name: Configure OpenClaw
         run: |
@@ -72,7 +69,7 @@ jobs:
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "ollama/gemma4:e2b"
+                  "primary": "ollama/llama3.2:1b"
                 }
               }
             },
