@@ -26,14 +26,15 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install OpenClaw CLI and Dependencies
+      - name: Install OpenClaw CLI and Gateway
         run: |
           SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest
-          npx playwright install-deps || true
 
       - name: Configure OpenClaw
         run: |
           mkdir -p ~/.openclaw
+          
+          # Create the primary configuration with all tools allowed and free options configured
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -60,25 +61,7 @@ jobs:
                 },
                 "models": {
                   "openrouter/auto": {}
-                },
-                "tools": {
-                  "profile": "full",
-                  "allow": ["*"]
                 }
-              }
-            },
-            "tools": {
-              "profile": "full",
-              "allow": ["*"],
-              "deny": [],
-              "web": {
-                "search": {
-                  "provider": "duckduckgo"
-                }
-              },
-              "exec": {
-                "ask": "never",
-                "security": "full"
               }
             },
             "commands": {
@@ -91,6 +74,37 @@ jobs:
                 "dmPolicy": "allowlist",
                 "allowFrom": [680349125]
               }
+            },
+            "tools": {
+              "profile": "full",
+              "allow": ["*"],
+              "web": {
+                "search": {
+                  "enabled": true,
+                  "provider": "duckduckgo"
+                },
+                "fetch": {
+                  "enabled": true
+                }
+              }
+            },
+            "messages": {
+              "tts": {
+                "auto": "always",
+                "provider": "microsoft"
+              }
+            }
+          }
+          EOF
+
+          # Create exec approvals config to auto-approve host execution commands (YOLO mode)
+          cat << 'EOF' > ~/.openclaw/exec-approvals.json
+          {
+            "version": 1,
+            "defaults": {
+              "security": "full",
+              "ask": "off",
+              "askFallback": "full"
             }
           }
           EOF
