@@ -1,39 +1,475 @@
-- name: Authenticate with Gemini CLI
-  shell: bash
-  run: |
-    set -euo pipefail
+name: Deploy OpenClaw Gateway with Gemini CLI OAuth
 
-    cat > "$RUNNER_TEMP/openclaw-auth.exp" <<'EXPECT'
-    #!/usr/bin/expect -f
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: Keep-alive duration in hours (maximum 6)
+        required: false
+        default: "6"
+        type: string
+      model:
+        description: Gemini model
+        required: false
+        default: gemini-3.1-pro-preview
+        type: string
 
-    set timeout 1200
-    log_user 1
+permissions:
+  contents: read
 
-    spawn openclaw onboard --auth-choice google-gemini-cli
+jobs:
+  run-openclaw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 370
 
-    expect {
-      -re {I understand.*Continue\?} {
-        send "\r"
-        exp_continue
-      }
-      -re {Continue with Google Gemini CLI OAuth\?} {
-        send "\r"
-        exp_continue
-      }
-      -re {Waiting for OAuth callback} {
-        exp_continue
-      }
-      eof
-    }
+    env:
+      OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
 
-    catch wait result
-    set exit_code [lindex $result 3]
-    exit $exit_code
-    EXPECT
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    chmod +x "$RUNNER_TEMP/openclaw-auth.exp"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
-    echo "Run the SSH forwarding command on your PC."
-    echo "Then open the Google OAuth URL shown below."
+      - name: Validate configuration
+        shell: bash
+        env:
+          REQUESTED_HOURS: ${{ inputs.duration }}
+        run: |
+          set -euo pipefail
 
-    "$RUNNER_TEMP/openclaw-auth.exp"
+          if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+            echo "::error::Configure OPENCLAW_GATEWAY_TOKEN"
+            exit 1
+          fi
+
+          if ! [[ "$REQUESTED_HOURS" =~ ^[1-6]$ ]]; then
+            echo "::error::Duration must be an integer from 1 to 6"
+            exit 1
+          fi
+
+      - name: Install OpenClaw
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHARP_IGNORE_GLOBAL_LIBVIPS=1 \
+            npm install --global openclaw@latest
+
+          openclaw --version
+
+      - name: Install tmate and Expect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install --yes tmate expect
+
+          tmate -V
+          expect -v
+
+      - name: Start OAuth callback forwarding session
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TMATE_SOCKET="$RUNNER_TEMP/tmate.sock"
+
+          tmate -S "$TMATE_SOCKET" new-session -d
+          tmate -S "$TMATE_SOCKET" wait tmate-ready
+
+          SSH_COMMAND="$(
+            tmate -S "$TMATE_SOCKET" display -p '#{tmate_ssh}'
+          )"
+
+          FORWARD_COMMAND="$(
+            printf '%s\n' "$SSH_COMMAND" |
+              sed 's/^ssh /ssh -N -L 8085:127.0.0.1:8085 /'
+          )"
+
+          echo "TMATE_SOCKET=$TMATE_SOCKET" >> "$GITHUB_ENV"
+
+          {
+            echo "## Gemini CLI OAuth forwarding"
+            echo
+            echo "Run this command in PowerShell:"
+            echo
+            echo '```powershell'
+            echo "$FORWARD_COMMAND"
+            echo '```'
+            echo
+            echo "Keep it running until authentication finishes."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "======================================================"
+          echo "RUN THIS COMMAND ON YOUR PC:"
+          echo
+          echo "$FORWARD_COMMAND"
+          echo
+          echo "Keep it running and then open the OAuth URL."
+          echo "======================================================"
+
+      - name: Authenticate with Gemini CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$RUNNER_TEMP/openclaw-auth.exp" <<'EXPECT'
+          #!/usr/bin/expect -f
+
+          set timeout 1200
+          log_user 1
+
+          spawn openclaw onboard --auth-choice google-gemini-cli
+
+          expect {
+            -re {I understand.*Continue\?} {
+              send "\r"
+              exp_continue
+            }
+
+            -re {Setup mode} {
+              send "\r"
+              exp_continue
+            }
+
+            -re {Continue with Google Gemini CLI OAuth\?} {
+              send "\r"
+              exp_continue
+            }
+
+            -re {Waiting for OAuth callback} {
+              exp_continue
+            }
+
+            -re {Open this URL in your browser} {
+              exp_continue
+            }
+
+            -re {Setup complete|Onboarding complete|You're all set} {
+              exp_continue
+            }
+
+            timeout {
+              puts stderr "OpenClaw authentication timed out"
+              exit 124
+            }
+
+            eof
+          }
+
+          catch wait result
+          set exit_code [lindex $result 3]
+
+          if {$exit_code eq ""} {
+            set exit_code 0
+          }
+
+          exit $exit_code
+          EXPECT
+
+          chmod +x "$RUNNER_TEMP/openclaw-auth.exp"
+
+          echo "Run the SSH forwarding command shown above."
+          echo "Then open the Google OAuth URL printed below."
+
+          "$RUNNER_TEMP/openclaw-auth.exp"
+
+      - name: Stop OAuth forwarding session
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${TMATE_SOCKET:-}" ]; then
+            tmate -S "$TMATE_SOCKET" kill-server \
+              2>/dev/null || true
+          fi
+
+      - name: Configure OpenClaw
+        shell: bash
+        env:
+          MODEL: ${{ inputs.model }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.openclaw"
+
+          CONFIG="$HOME/.openclaw/openclaw.json"
+          TEMP_CONFIG="$RUNNER_TEMP/openclaw.json"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo '{}' > "$CONFIG"
+          fi
+
+          jq \
+            --arg gatewayToken "$OPENCLAW_GATEWAY_TOKEN" \
+            --arg telegramToken "${TELEGRAM_BOT_TOKEN:-}" \
+            --arg model "$MODEL" \
+            '
+              .gateway = {
+                mode: "local",
+                bind: "loopback",
+                auth: {
+                  token: $gatewayToken
+                },
+                controlUi: {
+                  dangerouslyAllowHostHeaderOriginFallback: true
+                }
+              }
+              |
+              .agents.defaults.model.primary =
+                ("google/" + $model)
+              |
+              .agents.defaults.models[
+                "google/" + $model
+              ] = {}
+              |
+              .commands.ownerAllowFrom = [680349125]
+              |
+              .channels = (
+                if $telegramToken == "" then
+                  (.channels // {})
+                else
+                  (.channels // {}) + {
+                    telegram: {
+                      enabled: true,
+                      botToken: $telegramToken,
+                      dmPolicy: "allowlist",
+                      allowFrom: [680349125]
+                    }
+                  }
+                end
+              )
+              |
+              .tools = {
+                profile: "full",
+                allow: ["*"],
+                web: {
+                  search: {
+                    enabled: true,
+                    provider: "duckduckgo"
+                  },
+                  fetch: {
+                    enabled: true
+                  }
+                }
+              }
+              |
+              .messages.tts = {
+                auto: "always",
+                provider: "microsoft"
+              }
+            ' "$CONFIG" > "$TEMP_CONFIG"
+
+          mv "$TEMP_CONFIG" "$CONFIG"
+
+          cat > "$HOME/.openclaw/exec-approvals.json" <<'EOF'
+          {
+            "version": 1,
+            "defaults": {
+              "security": "full",
+              "ask": "off",
+              "askFallback": "full"
+            }
+          }
+          EOF
+
+          chmod 600 \
+            "$CONFIG" \
+            "$HOME/.openclaw/exec-approvals.json"
+
+          openclaw doctor
+
+      - name: Install Cloudflare Tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail --location --silent --show-error \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            --output "$RUNNER_TEMP/cloudflared"
+
+          chmod +x "$RUNNER_TEMP/cloudflared"
+          sudo mv "$RUNNER_TEMP/cloudflared" \
+            /usr/local/bin/cloudflared
+
+          cloudflared --version
+
+      - name: Start OpenClaw Gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          nohup openclaw gateway --port 18789 --verbose \
+            > "$RUNNER_TEMP/openclaw.log" 2>&1 &
+
+          OPENCLAW_PID=$!
+          echo "OPENCLAW_PID=$OPENCLAW_PID" >> "$GITHUB_ENV"
+
+          for attempt in {1..60}; do
+            if curl --fail --silent \
+              http://127.0.0.1:18789 >/dev/null; then
+              echo "OpenClaw Gateway is running"
+              exit 0
+            fi
+
+            if ! kill -0 "$OPENCLAW_PID" 2>/dev/null; then
+              echo "::error::OpenClaw exited unexpectedly"
+              cat "$RUNNER_TEMP/openclaw.log"
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "::error::OpenClaw failed to start"
+          cat "$RUNNER_TEMP/openclaw.log"
+          exit 1
+
+      - name: Start automatic device approver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$RUNNER_TEMP/approve-devices.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+
+          while true; do
+            OUTPUT="$(openclaw devices list 2>/dev/null || true)"
+
+            while IFS= read -r DEVICE_ID; do
+              [ -n "$DEVICE_ID" ] || continue
+
+              echo "Approving device: $DEVICE_ID"
+              openclaw devices approve "$DEVICE_ID" || true
+            done < <(
+              printf '%s\n' "$OUTPUT" |
+                grep -iE 'pending|pair|request' |
+                grep -oE \
+                  '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
+                sort -u || true
+            )
+
+            sleep 3
+          done
+          SCRIPT
+
+          chmod +x "$RUNNER_TEMP/approve-devices.sh"
+
+          nohup "$RUNNER_TEMP/approve-devices.sh" \
+            > "$RUNNER_TEMP/device-approver.log" 2>&1 &
+
+          DEVICE_APPROVER_PID=$!
+
+          echo "DEVICE_APPROVER_PID=$DEVICE_APPROVER_PID" \
+            >> "$GITHUB_ENV"
+
+      - name: Start Cloudflare Tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          nohup cloudflared tunnel \
+            --no-autoupdate \
+            --url http://127.0.0.1:18789 \
+            > "$RUNNER_TEMP/cloudflared.log" 2>&1 &
+
+          CLOUDFLARED_PID=$!
+
+          echo "CLOUDFLARED_PID=$CLOUDFLARED_PID" \
+            >> "$GITHUB_ENV"
+
+          for attempt in {1..60}; do
+            TUNNEL_URL="$(
+              grep -oE \
+                'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
+                "$RUNNER_TEMP/cloudflared.log" |
+              head -n 1 || true
+            )"
+
+            if [ -n "$TUNNEL_URL" ]; then
+              WEBSOCKET_URL="${TUNNEL_URL/https:/wss:}"
+
+              echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
+
+              {
+                echo "## OpenClaw Gateway"
+                echo
+                echo "Dashboard: $TUNNEL_URL"
+                echo
+                echo "WebSocket: $WEBSOCKET_URL"
+                echo
+                echo "Model: \`google/${{ inputs.model }}\`"
+                echo
+                echo "Device requests are approved automatically."
+              } >> "$GITHUB_STEP_SUMMARY"
+
+              echo "::notice title=OpenClaw Gateway::$TUNNEL_URL"
+              exit 0
+            fi
+
+            if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+              echo "::error::Cloudflare Tunnel exited unexpectedly"
+              cat "$RUNNER_TEMP/cloudflared.log"
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "::error::Cloudflare Tunnel failed to start"
+          cat "$RUNNER_TEMP/cloudflared.log"
+          exit 1
+
+      - name: Keep runner alive
+        shell: bash
+        env:
+          REQUESTED_HOURS: ${{ inputs.duration }}
+        run: |
+          set -euo pipefail
+
+          END_TIME=$((SECONDS + REQUESTED_HOURS * 3600))
+
+          echo "Gateway: $TUNNEL_URL"
+          echo "Keeping gateway active for $REQUESTED_HOURS hour(s)"
+
+          while (( SECONDS < END_TIME )); do
+            for PROCESS_ID in \
+              "$OPENCLAW_PID" \
+              "$DEVICE_APPROVER_PID" \
+              "$CLOUDFLARED_PID"
+            do
+              if ! kill -0 "$PROCESS_ID" 2>/dev/null; then
+                echo "::error::A required process stopped"
+                exit 1
+              fi
+            done
+
+            if ! curl --fail --silent \
+              http://127.0.0.1:18789 >/dev/null; then
+              echo "::error::OpenClaw stopped responding"
+              exit 1
+            fi
+
+            sleep 30
+          done
+
+      - name: Show diagnostic logs
+        if: failure()
+        shell: bash
+        run: |
+          echo "===== OpenClaw ====="
+          tail -n 150 "$RUNNER_TEMP/openclaw.log" \
+            2>/dev/null || true
+
+          echo "===== Device approver ====="
+          tail -n 100 "$RUNNER_TEMP/device-approver.log" \
+            2>/dev/null || true
+
+          echo "===== Cloudflared ====="
+          tail -n 100 "$RUNNER_TEMP/cloudflared.log" \
+            2>/dev/null || true
