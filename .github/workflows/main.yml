@@ -1,10 +1,10 @@
-name: Deploy OpenClaw Gateway (AIAnd Qwen 3.6)
+name: Deploy OpenClaw Gateway (MiniMax)
 
 on:
   workflow_dispatch:
     inputs:
-      aiand_api_key:
-        description: 'Your AIAnd API Key'
+      minimax_api_key:
+        description: 'Your MiniMax API Key'
         required: true
         type: string
       duration:
@@ -34,7 +34,7 @@ jobs:
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the configuration for AIAnd
+          # Create the configuration for MiniMax
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -49,19 +49,21 @@ jobs:
             },
             "models": {
               "providers": {
-                "openai": {
-                  "apiKey": "${{ inputs.aiand_api_key }}",
-                  "baseUrl": "https://api.aiand.com/v1"
+                "minimax": {
+                  "apiKey": "${{ inputs.minimax_api_key }}"
                 }
               }
             },
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "qwen/qwen3.6-27b"
+                  "primary": "minimax/MiniMax-M3"
                 },
                 "models": {
-                  "qwen/qwen3.6-27b": {}
+                  "minimax/MiniMax-M3": {},
+                  "minimax/image-01": {},
+                  "minimax-portal/image-01": {},
+                  "minimax/MiniMax-VL-01": {}
                 }
               }
             },
@@ -82,7 +84,7 @@ jobs:
               "web": {
                 "search": {
                   "enabled": true,
-                  "provider": "duckduckgo"
+                  "provider": "minimax"
                 },
                 "fetch": {
                   "enabled": true
