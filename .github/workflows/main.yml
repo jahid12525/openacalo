@@ -1,12 +1,8 @@
-name: Deploy OpenClaw Gateway with Cloudflare Tunnel
+name: Deploy OpenClaw Gateway (Kimi via Ollama)
 
 on:
   workflow_dispatch:
     inputs:
-      gemini_api_key:
-        description: 'Your Gemini API Key'
-        required: true
-        type: string
       duration:
         description: 'Keep-alive duration in hours (max 6)'
         required: false
@@ -26,15 +22,25 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Install & Start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          # Start Ollama in the background
+          ollama serve > ollama.log 2>&1 &
+          echo "Waiting for Ollama to boot..."
+          sleep 10
+          # Pull the Kimi model
+          ollama pull kimi
+
       - name: Install OpenClaw CLI and Gateway
         run: |
           SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest
 
-      - name: Configure OpenClaw
+      - name: Configure OpenClaw for Ollama
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the primary configuration using Gemini 3.5 Flash
+          # Create config using Ollama as the provider
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -42,25 +48,19 @@ jobs:
               "bind": "loopback",
               "auth": {
                 "token": "openclaw-github-actions-secure-token-2026"
-              },
-              "controlUi": {
-                "dangerouslyAllowHostHeaderOriginFallback": true
               }
             },
             "models": {
               "providers": {
-                "google": {
-                  "apiKey": "${{ inputs.gemini_api_key }}"
+                "ollama": {
+                  "endpoint": "http://127.0.0.1:11434"
                 }
               }
             },
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "google/gemini-3.5-flash"
-                },
-                "models": {
-                  "google/gemini-3.5-flash": {}
+                  "primary": "ollama/kimi"
                 }
               }
             },
@@ -74,37 +74,6 @@ jobs:
                 "dmPolicy": "allowlist",
                 "allowFrom": [680349125]
               }
-            },
-            "tools": {
-              "profile": "full",
-              "allow": ["*"],
-              "web": {
-                "search": {
-                  "enabled": true,
-                  "provider": "duckduckgo"
-                },
-                "fetch": {
-                  "enabled": true
-                }
-              }
-            },
-            "messages": {
-              "tts": {
-                "auto": "always",
-                "provider": "microsoft"
-              }
-            }
-          }
-          EOF
-
-          # Create exec approvals config to auto-approve host execution commands (YOLO mode)
-          cat << 'EOF' > ~/.openclaw/exec-approvals.json
-          {
-            "version": 1,
-            "defaults": {
-              "security": "full",
-              "ask": "off",
-              "askFallback": "full"
             }
           }
           EOF
@@ -117,13 +86,13 @@ jobs:
 
       - name: Start OpenClaw Gateway
         run: |
+          # Launch gateway pointing to the Ollama provider
           nohup openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway to boot..."
           for i in {1..15}; do
             if openclaw gateway status 2>/dev/null | grep -q "running"; then
               echo "Gateway successfully booted!"
-              openclaw gateway status
               break
             fi
             sleep 2
@@ -132,45 +101,12 @@ jobs:
       - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --url http://127.0.0.1:18789 > cloudflared.log 2>&1 &
-          
-          echo "Waiting for Cloudflare Tunnel to generate public link..."
           sleep 12
-          
           TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' cloudflared.log | head -n 1)
-          
-          if [ -n "$TUNNEL_URL" ]; then
-            echo "=========================================================================="
-            echo "🚀 OPENCLAW GATEWAY IS LIVE!"
-            echo "🔗 Access Dashboard: $TUNNEL_URL"
-            echo "🔑 Secret Token: openclaw-github-actions-secure-token-2026"
-            echo "=========================================================================="
-          else
-            echo "⚠️ Could not retrieve Cloudflare Tunnel URL automatically."
-            echo "Checking cloudflared logs:"
-            cat cloudflared.log | tail -n 20
-            exit 1
-          fi
+          echo "Access Dashboard: $TUNNEL_URL"
 
-      - name: Keep-Alive Daemon & Auto-Device Approver
+      - name: Keep-Alive
         run: |
           HOURS=${{ inputs.duration }}
-          if [ "$HOURS" -gt 6 ]; then
-            HOURS=6
-          fi
-          TOTAL_SECONDS=$((HOURS * 3600))
-          ELAPSED_SECONDS=0
-          
-          echo "Keeping runner alive for $HOURS hour(s). Monitoring for incoming browser pairing requests..."
-          
-          while [ $ELAPSED_SECONDS -lt $TOTAL_SECONDS ]; do
-            PENDING_ID=$(openclaw devices list 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
-            
-            if [ -n "$PENDING_ID" ]; then
-              echo "🔒 [Auto-Auth] Detected connection request ID: $PENDING_ID"
-              openclaw devices approve "$PENDING_ID"
-              echo "✅ [Auto-Auth] Device successfully paired!"
-            fi
-            
-            sleep 4
-            ELAPSED_SECONDS=$((ELAPSED_SECONDS + 4))
-          done
+          [ "$HOURS" -gt 6 ] && HOURS=6
+          sleep $((HOURS * 3600))
