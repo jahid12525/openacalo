@@ -51,28 +51,21 @@ jobs:
             exit 1
           fi
 
-      - name: Install OpenClaw
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SHARP_IGNORE_GLOBAL_LIBVIPS=1 \
-            npm install --global openclaw@latest
-
-          openclaw --version
-
-      - name: Install tmate and Expect
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
 
           sudo apt-get update
-          sudo apt-get install --yes tmate expect
+          sudo apt-get install --yes expect tmate
 
+          SHARP_IGNORE_GLOBAL_LIBVIPS=1 \
+            npm install --global openclaw@latest
+
+          openclaw --version
           tmate -V
-          expect -v
 
-      - name: Start OAuth callback forwarding session
+      - name: Start OAuth callback forwarding
         shell: bash
         run: |
           set -euo pipefail
@@ -94,7 +87,7 @@ jobs:
           echo "TMATE_SOCKET=$TMATE_SOCKET" >> "$GITHUB_ENV"
 
           {
-            echo "## Gemini CLI OAuth forwarding"
+            echo "## Gemini OAuth forwarding"
             echo
             echo "Run this command in PowerShell:"
             echo
@@ -102,7 +95,7 @@ jobs:
             echo "$FORWARD_COMMAND"
             echo '```'
             echo
-            echo "Keep it running until authentication finishes."
+            echo "Keep it running until authentication completes."
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "======================================================"
@@ -110,11 +103,16 @@ jobs:
           echo
           echo "$FORWARD_COMMAND"
           echo
-          echo "Keep it running and then open the OAuth URL."
+          echo "Keep it running, then open the Google OAuth URL."
           echo "======================================================"
 
       - name: Authenticate with Gemini CLI
         shell: bash
+        env:
+          NO_COLOR: "1"
+          FORCE_COLOR: "0"
+          CLICOLOR: "0"
+          CLICOLOR_FORCE: "0"
         run: |
           set -euo pipefail
 
@@ -124,29 +122,40 @@ jobs:
           set timeout 1200
           log_user 1
 
-          spawn openclaw onboard --auth-choice google-gemini-cli
+          set env(NO_COLOR) "1"
+          set env(FORCE_COLOR) "0"
+          set env(CLICOLOR) "0"
+          set env(CLICOLOR_FORCE) "0"
+
+          spawn openclaw onboard \
+            --auth-choice google-gemini-cli
 
           expect {
             -re {I understand.*Continue\?} {
-              send "\r"
+              send -- "\r"
               exp_continue
             }
 
             -re {Setup mode} {
-              send "\r"
+              send -- "\r"
+              exp_continue
+            }
+
+            -re {QuickStart} {
+              send -- "\r"
               exp_continue
             }
 
             -re {Continue with Google Gemini CLI OAuth\?} {
-              send "\r"
-              exp_continue
-            }
-
-            -re {Waiting for OAuth callback} {
+              send -- "\r"
               exp_continue
             }
 
             -re {Open this URL in your browser} {
+              exp_continue
+            }
+
+            -re {Waiting for OAuth callback} {
               exp_continue
             }
 
@@ -155,7 +164,7 @@ jobs:
             }
 
             timeout {
-              puts stderr "OpenClaw authentication timed out"
+              puts stderr "Authentication timed out after 20 minutes"
               exit 124
             }
 
@@ -174,12 +183,12 @@ jobs:
 
           chmod +x "$RUNNER_TEMP/openclaw-auth.exp"
 
-          echo "Run the SSH forwarding command shown above."
-          echo "Then open the Google OAuth URL printed below."
+          echo "Run the SSH forwarding command from the previous step."
+          echo "Then open the Google OAuth URL displayed below."
 
           "$RUNNER_TEMP/openclaw-auth.exp"
 
-      - name: Stop OAuth forwarding session
+      - name: Stop OAuth callback forwarding
         if: always()
         shell: bash
         run: |
@@ -294,6 +303,7 @@ jobs:
             --output "$RUNNER_TEMP/cloudflared"
 
           chmod +x "$RUNNER_TEMP/cloudflared"
+
           sudo mv "$RUNNER_TEMP/cloudflared" \
             /usr/local/bin/cloudflared
 
@@ -308,7 +318,9 @@ jobs:
             > "$RUNNER_TEMP/openclaw.log" 2>&1 &
 
           OPENCLAW_PID=$!
-          echo "OPENCLAW_PID=$OPENCLAW_PID" >> "$GITHUB_ENV"
+
+          echo "OPENCLAW_PID=$OPENCLAW_PID" \
+            >> "$GITHUB_ENV"
 
           for attempt in {1..60}; do
             if curl --fail --silent \
@@ -394,7 +406,8 @@ jobs:
             if [ -n "$TUNNEL_URL" ]; then
               WEBSOCKET_URL="${TUNNEL_URL/https:/wss:}"
 
-              echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
+              echo "TUNNEL_URL=$TUNNEL_URL" \
+                >> "$GITHUB_ENV"
 
               {
                 echo "## OpenClaw Gateway"
