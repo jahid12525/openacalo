@@ -1,176 +1,259 @@
-name: Deploy OpenClaw Gateway with Cloudflare Tunnel
+name: Deploy OpenClaw Gateway with Ollama
 
 on:
   workflow_dispatch:
     inputs:
-      openrouter_api_key:
-        description: 'Your OpenRouter API Key (sk-or-...)'
-        required: true
-        type: string
       duration:
-        description: 'Keep-alive duration in hours (max 6)'
+        description: Keep-alive duration in hours (maximum 6)
         required: false
-        default: '6'
+        default: "6"
         type: string
+      model:
+        description: Ollama model
+        required: false
+        default: qwen3.5:4b
+        type: choice
+        options:
+          - qwen3.5:0.8b
+          - qwen3.5:2b
+          - qwen3.5:4b
+          - qwen3.5:9b
+
+permissions:
+  contents: read
 
 jobs:
   run-openclaw:
     runs-on: ubuntu-latest
+    timeout-minutes: 370
+
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
 
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: "24"
 
-      - name: Install OpenClaw CLI and Gateway
+      - name: Install OpenClaw
         run: |
-          SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest
+          SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install --global openclaw@latest
+          openclaw --version
 
-      - name: Configure OpenClaw
+      - name: Install Ollama
         run: |
-          mkdir -p ~/.openclaw
-          
-          # Create the primary configuration with all tools allowed and free options configured
-          cat << 'EOF' > ~/.openclaw/openclaw.json
-          {
-            "gateway": {
-              "mode": "local",
-              "bind": "loopback",
-              "auth": {
-                "token": "openclaw-github-actions-secure-token-2026"
-              },
-              "controlUi": {
-                "dangerouslyAllowHostHeaderOriginFallback": true
-              }
-            },
-            "models": {
-              "providers": {
-                "openrouter": {
-                  "apiKey": "${{ inputs.openrouter_api_key }}"
-                }
-              }
-            },
-            "agents": {
-              "defaults": {
-                "model": {
-                  "primary": "openrouter/auto"
-                },
-                "models": {
-                  "openrouter/auto": {}
-                }
-              }
-            },
-            "commands": {
-              "ownerAllowFrom": [680349125]
-            },
-            "channels": {
-              "telegram": {
-                "enabled": true,
-                "botToken": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
-                "dmPolicy": "allowlist",
-                "allowFrom": [680349125]
-              }
-            },
-            "tools": {
-              "profile": "full",
-              "allow": ["*"],
-              "web": {
-                "search": {
-                  "enabled": true,
-                  "provider": "duckduckgo"
-                },
-                "fetch": {
-                  "enabled": true
-                }
-              }
-            },
-            "messages": {
-              "tts": {
-                "auto": "always",
-                "provider": "microsoft"
-              }
-            }
-          }
-          EOF
+          curl --fail --silent --show-error \
+            https://ollama.com/install.sh | sh
 
-          # Create exec approvals config to auto-approve host execution commands (YOLO mode)
-          cat << 'EOF' > ~/.openclaw/exec-approvals.json
-          {
-            "version": 1,
-            "defaults": {
-              "security": "full",
-              "ask": "off",
-              "askFallback": "full"
-            }
-          }
-          EOF
+          nohup ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
 
-      - name: Install Cloudflare Tunnel (cloudflared)
-        run: |
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
-          sudo mv cloudflared /usr/local/bin/
-
-      - name: Start OpenClaw Gateway
-        run: |
-          nohup openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
-          
-          echo "Waiting for OpenClaw Gateway to boot..."
-          for i in {1..15}; do
-            if openclaw gateway status 2>/dev/null | grep -q "running"; then
-              echo "Gateway successfully booted!"
-              openclaw gateway status
-              break
+          for attempt in {1..30}; do
+            if curl --fail --silent \
+              http://127.0.0.1:11434/api/tags >/dev/null; then
+              echo "Ollama is running"
+              exit 0
             fi
+
             sleep 2
           done
 
-      - name: Start Cloudflare Tunnel
+          cat "$RUNNER_TEMP/ollama.log"
+          exit 1
+
+      - name: Download Qwen model
+        env:
+          MODEL: ${{ inputs.model }}
         run: |
-          nohup cloudflared tunnel --url http://127.0.0.1:18789 > cloudflared.log 2>&1 &
-          
-          echo "Waiting for Cloudflare Tunnel to generate public link..."
-          sleep 12
-          
-          TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' cloudflared.log | head -n 1)
-          
-          if [ -n "$TUNNEL_URL" ]; then
-            echo "=========================================================================="
-            echo "🚀 OPENCLAW GATEWAY IS LIVE!"
-            echo "🔗 Access Dashboard: $TUNNEL_URL"
-            echo "🔑 Secret Token: openclaw-github-actions-secure-token-2026"
-            echo "=========================================================================="
-          else
-            echo "⚠️ Could not retrieve Cloudflare Tunnel URL automatically."
-            echo "Checking cloudflared logs:"
-            cat cloudflared.log | tail -n 20
+          ollama pull "$MODEL"
+          ollama list
+
+      - name: Configure OpenClaw
+        env:
+          MODEL: ${{ inputs.model }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          if [ -z "$OPENCLAW_GATEWAY_TOKEN" ]; then
+            echo "::error::OPENCLAW_GATEWAY_TOKEN secret is not configured"
             exit 1
           fi
 
-      - name: Keep-Alive Daemon & Auto-Device Approver
+          mkdir -p "$HOME/.openclaw"
+
+          jq -n \
+            --arg gatewayToken "$OPENCLAW_GATEWAY_TOKEN" \
+            --arg telegramToken "$TELEGRAM_BOT_TOKEN" \
+            --arg model "$MODEL" \
+            '{
+              gateway: {
+                mode: "local",
+                bind: "loopback",
+                auth: {
+                  token: $gatewayToken
+                },
+                controlUi: {
+                  dangerouslyAllowHostHeaderOriginFallback: true
+                }
+              },
+              models: {
+                providers: {
+                  ollama: {
+                    baseUrl: "http://127.0.0.1:11434/v1",
+                    apiKey: "ollama"
+                  }
+                }
+              },
+              agents: {
+                defaults: {
+                  model: {
+                    primary: ("ollama/" + $model)
+                  },
+                  models: {
+                    ("ollama/" + $model): {}
+                  }
+                }
+              },
+              commands: {
+                ownerAllowFrom: [680349125]
+              },
+              channels: (
+                if $telegramToken == "" then {}
+                else {
+                  telegram: {
+                    enabled: true,
+                    botToken: $telegramToken,
+                    dmPolicy: "allowlist",
+                    allowFrom: [680349125]
+                  }
+                }
+                end
+              ),
+              tools: {
+                profile: "full",
+                allow: ["*"],
+                web: {
+                  search: {
+                    enabled: true,
+                    provider: "duckduckgo"
+                  },
+                  fetch: {
+                    enabled: true
+                  }
+                }
+              },
+              messages: {
+                tts: {
+                  auto: "always",
+                  provider: "microsoft"
+                }
+              }
+            }' > "$HOME/.openclaw/openclaw.json"
+
+          chmod 600 "$HOME/.openclaw/openclaw.json"
+
+      - name: Install Cloudflare Tunnel
         run: |
-          HOURS=${{ inputs.duration }}
-          if [ "$HOURS" -gt 6 ]; then
-            HOURS=6
-          fi
-          TOTAL_SECONDS=$((HOURS * 3600))
-          ELAPSED_SECONDS=0
-          
-          echo "Keeping runner alive for $HOURS hour(s). Monitoring for incoming browser pairing requests..."
-          
-          while [ $ELAPSED_SECONDS -lt $TOTAL_SECONDS ]; do
-            PENDING_ID=$(openclaw devices list 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
-            
-            if [ -n "$PENDING_ID" ]; then
-              echo "🔒 [Auto-Auth] Detected connection request ID: $PENDING_ID"
-              openclaw devices approve "$PENDING_ID"
-              echo "✅ [Auto-Auth] Device successfully paired!"
+          curl --fail --location --silent --show-error \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            --output cloudflared
+
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Start OpenClaw Gateway
+        run: |
+          nohup openclaw gateway --port 18789 --verbose \
+            > "$RUNNER_TEMP/openclaw.log" 2>&1 &
+
+          for attempt in {1..30}; do
+            if curl --fail --silent \
+              http://127.0.0.1:18789 >/dev/null; then
+              echo "OpenClaw Gateway is running"
+              exit 0
             fi
-            
-            sleep 4
-            ELAPSED_SECONDS=$((ELAPSED_SECONDS + 4))
+
+            sleep 2
           done
+
+          echo "::error::OpenClaw Gateway failed to start"
+          tail -n 100 "$RUNNER_TEMP/openclaw.log"
+          exit 1
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          nohup cloudflared tunnel \
+            --no-autoupdate \
+            --url http://127.0.0.1:18789 \
+            > "$RUNNER_TEMP/cloudflared.log" 2>&1 &
+
+          for attempt in {1..30}; do
+            TUNNEL_URL="$(
+              grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
+                "$RUNNER_TEMP/cloudflared.log" |
+              head -n 1 || true
+            )"
+
+            if [ -n "$TUNNEL_URL" ]; then
+              {
+                echo "## OpenClaw Gateway"
+                echo
+                echo "Dashboard: $TUNNEL_URL"
+                echo
+                echo "Model: \`${{ inputs.model }}\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+
+              echo "::notice title=OpenClaw Gateway::$TUNNEL_URL"
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          echo "::error::Cloudflare Tunnel failed to start"
+          tail -n 100 "$RUNNER_TEMP/cloudflared.log"
+          exit 1
+
+      - name: Keep runner alive
+        env:
+          REQUESTED_HOURS: ${{ inputs.duration }}
+        run: |
+          if ! [[ "$REQUESTED_HOURS" =~ ^[1-6]$ ]]; then
+            echo "::error::Duration must be an integer from 1 through 6"
+            exit 1
+          fi
+
+          END_TIME=$((SECONDS + REQUESTED_HOURS * 3600))
+          echo "Keeping the gateway active for $REQUESTED_HOURS hour(s)"
+
+          while (( SECONDS < END_TIME )); do
+            if ! curl --fail --silent \
+              http://127.0.0.1:11434/api/tags >/dev/null; then
+              echo "::error::Ollama stopped responding"
+              exit 1
+            fi
+
+            if ! curl --fail --silent \
+              http://127.0.0.1:18789 >/dev/null; then
+              echo "::error::OpenClaw stopped responding"
+              exit 1
+            fi
+
+            sleep 30
+          done
+
+      - name: Show diagnostic logs
+        if: failure()
+        run: |
+          echo "===== Ollama ====="
+          tail -n 100 "$RUNNER_TEMP/ollama.log" 2>/dev/null || true
+
+          echo "===== OpenClaw ====="
+          tail -n 100 "$RUNNER_TEMP/openclaw.log" 2>/dev/null || true
+
+          echo "===== Cloudflared ====="
+          tail -n 100 "$RUNNER_TEMP/cloudflared.log" 2>/dev/null || true
