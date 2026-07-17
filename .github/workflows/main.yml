@@ -1,16 +1,16 @@
-name: Deploy OpenClaw Gateway with Cloudflare Tunnel (Gemini API)
+name: Deploy OpenClaw Gateway (AIAnd Qwen 3.6)
 
 on:
   workflow_dispatch:
     inputs:
-      gemini_api_key:
-        description: 'Your Google Gemini API Key (AI Studio)'
+      aiand_api_key:
+        description: 'Your AIAnd API Key'
         required: true
         type: string
       duration:
         description: 'Keep-alive duration in hours (max 6)'
         required: false
-        default: '6'
+        default: '5'
         type: string
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the primary configuration pointing to Gemini API
+          # Create the configuration for AIAnd (OpenAI Compatible)
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -49,18 +49,19 @@ jobs:
             },
             "models": {
               "providers": {
-                "google": {
-                  "apiKey": "${{ inputs.gemini_api_key }}"
+                "openai": {
+                  "apiKey": "${{ inputs.aiand_api_key }}",
+                  "baseUrl": "https://api.aiand.com/v1"
                 }
               }
             },
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "google/gemini-flash-latest"
+                  "primary": "qwen-3.6-27b"
                 },
                 "models": {
-                  "google/gemini-flash-latest": {}
+                  "qwen-3.6-27b": {}
                 }
               }
             },
@@ -97,7 +98,7 @@ jobs:
           }
           EOF
 
-          # Create exec approvals config to auto-approve host execution commands (YOLO mode)
+          # Create exec approvals config
           cat << 'EOF' > ~/.openclaw/exec-approvals.json
           {
             "version": 1,
@@ -146,8 +147,6 @@ jobs:
             echo "=========================================================================="
           else
             echo "⚠️ Could not retrieve Cloudflare Tunnel URL automatically."
-            echo "Checking cloudflared logs:"
-            cat cloudflared.log | tail -n 20
             exit 1
           fi
 
@@ -160,7 +159,7 @@ jobs:
           TOTAL_SECONDS=$((HOURS * 3600))
           ELAPSED_SECONDS=0
           
-          echo "Keeping runner alive for $HOURS hour(s). Monitoring for incoming browser pairing requests..."
+          echo "Keeping runner alive for $HOURS hour(s)..."
           
           while [ $ELAPSED_SECONDS -lt $TOTAL_SECONDS ]; do
             PENDING_ID=$(openclaw devices list 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
@@ -168,7 +167,6 @@ jobs:
             if [ -n "$PENDING_ID" ]; then
               echo "🔒 [Auto-Auth] Detected connection request ID: $PENDING_ID"
               openclaw devices approve "$PENDING_ID"
-              echo "✅ [Auto-Auth] Device successfully paired!"
             fi
             
             sleep 4
