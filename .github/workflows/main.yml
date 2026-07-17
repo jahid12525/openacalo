@@ -1,4 +1,4 @@
-name: Deploy OpenClaw Gateway with Cloudflare Tunnel (Gemini Auto)
+name: Deploy OpenClaw Gateway with Cloudflare Tunnel (Gemini API)
 
 on:
   workflow_dispatch:
@@ -34,7 +34,7 @@ jobs:
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the primary configuration pointing to Gemini API with auto-fetch
+          # Create the primary configuration pointing to Gemini API
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -57,10 +57,10 @@ jobs:
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "google/auto"
+                  "primary": "google/gemini-flash-latest"
                 },
                 "models": {
-                  "google/auto": {}
+                  "google/gemini-flash-latest": {}
                 }
               }
             },
