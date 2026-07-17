@@ -43,8 +43,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           SHARP_IGNORE_GLOBAL_LIBVIPS=1 \
             npm install --global openclaw@latest
+
           openclaw --version
 
       - name: Install Ollama
@@ -64,7 +66,9 @@ jobs:
           command -v ollama
           ollama --version
 
-          nohup ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          nohup ollama serve \
+            > "$RUNNER_TEMP/ollama.log" 2>&1 &
+
           OLLAMA_PID=$!
           echo "OLLAMA_PID=$OLLAMA_PID" >> "$GITHUB_ENV"
 
@@ -76,6 +80,7 @@ jobs:
             fi
 
             if ! kill -0 "$OLLAMA_PID" 2>/dev/null; then
+              echo "::error::Ollama exited unexpectedly"
               cat "$RUNNER_TEMP/ollama.log"
               exit 1
             fi
@@ -168,14 +173,7 @@ jobs:
                     primary: ("ollama/" + $model)
                   },
                   models: {
-                    ("ollama/" + $model): {
-                      input: ["text", "image"],
-                      params: {
-                        num_ctx: 4096,
-                        num_predict: 512,
-                        temperature: 0.3
-                      }
-                    }
+                    ("ollama/" + $model): {}
                   }
                 }
               },
@@ -230,6 +228,8 @@ jobs:
             "$HOME/.openclaw/openclaw.json" \
             "$HOME/.openclaw/exec-approvals.json"
 
+          openclaw doctor
+
       - name: Install Cloudflare Tunnel
         shell: bash
         run: |
@@ -240,6 +240,7 @@ jobs:
             --output "$RUNNER_TEMP/cloudflared"
 
           chmod +x "$RUNNER_TEMP/cloudflared"
+
           sudo mv "$RUNNER_TEMP/cloudflared" \
             /usr/local/bin/cloudflared
 
@@ -264,6 +265,7 @@ jobs:
             fi
 
             if ! kill -0 "$OPENCLAW_PID" 2>/dev/null; then
+              echo "::error::OpenClaw exited unexpectedly"
               cat "$RUNNER_TEMP/openclaw.log"
               exit 1
             fi
@@ -288,6 +290,7 @@ jobs:
 
             while IFS= read -r DEVICE_ID; do
               [ -n "$DEVICE_ID" ] || continue
+
               echo "Approving device: $DEVICE_ID"
               openclaw devices approve "$DEVICE_ID" || true
             done < <(
@@ -308,6 +311,7 @@ jobs:
             > "$RUNNER_TEMP/device-approver.log" 2>&1 &
 
           DEVICE_APPROVER_PID=$!
+
           echo "DEVICE_APPROVER_PID=$DEVICE_APPROVER_PID" \
             >> "$GITHUB_ENV"
 
@@ -322,6 +326,7 @@ jobs:
             > "$RUNNER_TEMP/cloudflared.log" 2>&1 &
 
           CLOUDFLARED_PID=$!
+
           echo "CLOUDFLARED_PID=$CLOUDFLARED_PID" \
             >> "$GITHUB_ENV"
 
@@ -338,15 +343,13 @@ jobs:
               echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
 
               {
-                echo "## Multimodal OpenClaw Gateway"
+                echo "## OpenClaw Gateway"
                 echo
                 echo "Dashboard: $TUNNEL_URL"
                 echo
                 echo "WebSocket: $WEBSOCKET_URL"
                 echo
                 echo "Model: \`${{ inputs.model }}\`"
-                echo
-                echo "Inputs: text and image"
                 echo
                 echo "Device requests are approved automatically."
               } >> "$GITHUB_STEP_SUMMARY"
@@ -356,6 +359,7 @@ jobs:
             fi
 
             if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+              echo "::error::Cloudflare Tunnel exited unexpectedly"
               cat "$RUNNER_TEMP/cloudflared.log"
               exit 1
             fi
@@ -411,10 +415,12 @@ jobs:
         shell: bash
         run: |
           echo "===== Ollama ====="
-          tail -n 100 "$RUNNER_TEMP/ollama.log" 2>/dev/null || true
+          tail -n 100 "$RUNNER_TEMP/ollama.log" \
+            2>/dev/null || true
 
           echo "===== OpenClaw ====="
-          tail -n 100 "$RUNNER_TEMP/openclaw.log" 2>/dev/null || true
+          tail -n 100 "$RUNNER_TEMP/openclaw.log" \
+            2>/dev/null || true
 
           echo "===== Device approver ====="
           tail -n 100 "$RUNNER_TEMP/device-approver.log" \
