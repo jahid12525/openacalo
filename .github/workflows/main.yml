@@ -1,8 +1,12 @@
-name: Deploy OpenClaw Gateway with Cloudflare Tunnel (Ollama)
+name: Deploy OpenClaw Gateway with Cloudflare Tunnel (Gemini Auto)
 
 on:
   workflow_dispatch:
     inputs:
+      gemini_api_key:
+        description: 'Your Google Gemini API Key (AI Studio)'
+        required: true
+        type: string
       duration:
         description: 'Keep-alive duration in hours (max 6)'
         required: false
@@ -26,26 +30,11 @@ jobs:
         run: |
           SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest
 
-      - name: Install Ollama & Pull Model
-        run: |
-          # Install Ollama
-          curl -fsSL https://ollama.com/install.sh | sh
-          
-          # Start Ollama server in the background
-          nohup ollama serve > ollama.log 2>&1 &
-          
-          # Wait for Ollama to boot
-          sleep 5
-          
-          # Pull the requested lightweight model
-          echo "Pulling llama3.2:1b..."
-          ollama pull llama3.2:1b
-
       - name: Configure OpenClaw
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the primary configuration pointing to Ollama with a dummy API key
+          # Create the primary configuration pointing to Gemini API with auto-fetch
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -60,16 +49,18 @@ jobs:
             },
             "models": {
               "providers": {
-                "ollama": {
-                  "baseUrl": "http://127.0.0.1:11434",
-                  "apiKey": "ollama"
+                "google": {
+                  "apiKey": "${{ inputs.gemini_api_key }}"
                 }
               }
             },
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "ollama/llama3.2:1b"
+                  "primary": "google/auto"
+                },
+                "models": {
+                  "google/auto": {}
                 }
               }
             },
