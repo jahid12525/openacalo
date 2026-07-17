@@ -3,10 +3,34 @@ name: Deploy OpenClaw Gateway with Cloudflare Tunnel
 on:
   workflow_dispatch:
     inputs:
-      openrouter_api_key:
-        description: 'Your OpenRouter API Key (sk-or-...)'
+      model_source:
+        description: 'Choose model source (Ollama runs locally on runner, OpenRouter calls hosted API)'
         required: true
+        default: 'openrouter'
+        type: choice
+        options:
+          - 'openrouter'
+          - 'ollama'
+      openrouter_api_key:
+        description: 'Your OpenRouter API Key (required if source is openrouter)'
+        required: false
         type: string
+      openrouter_model:
+        description: 'Gemma 4 model to use on OpenRouter'
+        required: false
+        default: 'google/gemma-4-26b-it'
+        type: choice
+        options:
+          - 'google/gemma-4-26b-it'
+          - 'google/gemma-4-31b-it'
+      local_gemma_size:
+        description: 'Gemma 4 model size for local Ollama run (e2b=2B model, e4b=4B model)'
+        required: false
+        default: 'gemma4:e4b'
+        type: choice
+        options:
+          - 'gemma4:e2b'
+          - 'gemma4:e4b'
       duration:
         description: 'Keep-alive duration in hours (max 6)'
         required: false
@@ -30,13 +54,40 @@ jobs:
         run: |
           SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest
 
+      - name: Install and Start Ollama (Local Gemma 4)
+        if: ${{ inputs.model_source == 'ollama' }}
+        run: |
+          echo "Installing Ollama..."
+          curl -fsSL https://ollama.com/install.sh | sh
+          
+          echo "Starting Ollama server in background..."
+          nohup ollama serve > ollama.log 2>&1 &
+          
+          echo "Waiting for Ollama server to respond..."
+          for i in {1..15}; do
+            if curl -s http://127.0.0.1:11434/api/tags > /dev/null; then
+              echo "Ollama server is active!"
+              break
+            fi
+            sleep 2
+          done
+          
+          echo "Pulling Gemma 4 (${{ inputs.local_gemma_size }})..."
+          ollama pull ${{ inputs.local_gemma_size }}
+
       - name: Configure OpenClaw
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the primary configuration with all tools allowed and free options configured
-          cat << 'EOF' > ~/.openclaw/openclaw.json
-          {
+          # Create JS helper to construct openclaw.json dynamically based on model source
+          cat << 'EOF' > generate_config.js
+          const fs = require('fs');
+          const source = process.argv[2];
+          const openrouterKey = process.argv[3];
+          const openrouterModel = process.argv[4];
+          const localGemmaSize = process.argv[5];
+
+          const config = {
             "gateway": {
               "mode": "local",
               "bind": "loopback",
@@ -48,20 +99,12 @@ jobs:
               }
             },
             "models": {
-              "providers": {
-                "openrouter": {
-                  "apiKey": "${{ inputs.openrouter_api_key }}"
-                }
-              }
+              "providers": {}
             },
             "agents": {
               "defaults": {
-                "model": {
-                  "primary": "openrouter/auto"
-                },
-                "models": {
-                  "openrouter/auto": {}
-                }
+                "model": {},
+                "models": {}
               }
             },
             "commands": {
@@ -94,8 +137,37 @@ jobs:
                 "provider": "microsoft"
               }
             }
+          };
+
+          if (source === 'openrouter') {
+            config.models.providers.openrouter = {
+              "apiKey": openrouterKey
+            };
+            config.agents.defaults.model.primary = "openrouter/" + openrouterModel;
+            config.agents.defaults.models["openrouter/" + openrouterModel] = {};
+          } else if (source === 'ollama') {
+            config.models.providers.ollama = {
+              "baseUrl": "http://127.0.0.1:11434",
+              "apiKey": "ollama-local",
+              "api": "ollama",
+              "models": [
+                {
+                  "id": localGemmaSize,
+                  "name": "Local Gemma 4",
+                  "contextWindow": 128000,
+                  "maxOutput": 4096,
+                  "toolCalling": true
+                }
+              ]
+            };
+            config.agents.defaults.model.primary = "ollama/" + localGemmaSize;
+            config.agents.defaults.models["ollama/" + localGemmaSize] = {};
           }
+
+          fs.writeFileSync(process.env.HOME + '/.openclaw/openclaw.json', JSON.stringify(config, null, 2));
           EOF
+
+          node generate_config.js "${{ inputs.model_source }}" "${{ inputs.openrouter_api_key }}" "${{ inputs.openrouter_model }}" "${{ inputs.local_gemma_size }}"
 
           # Create exec approvals config to auto-approve host execution commands (YOLO mode)
           cat << 'EOF' > ~/.openclaw/exec-approvals.json
