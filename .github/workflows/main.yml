@@ -1,4 +1,4 @@
-name: Deploy OpenClaw Gateway with Gemini
+name: Deploy OpenClaw Gateway with Gemini CLI OAuth
 
 on:
   workflow_dispatch:
@@ -11,11 +11,8 @@ on:
       model:
         description: Gemini model
         required: false
-        default: gemini-flash-latest
-        type: choice
-        options:
-          - gemini-flash-latest
-          - gemini-flash-lite-latest
+        default: gemini-3.1-pro-preview
+        type: string
 
 permissions:
   contents: read
@@ -26,8 +23,6 @@ jobs:
     timeout-minutes: 370
 
     env:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
 
     steps:
@@ -39,18 +34,20 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Validate secrets
+      - name: Validate configuration
         shell: bash
+        env:
+          REQUESTED_HOURS: ${{ inputs.duration }}
         run: |
           set -euo pipefail
 
-          if [ -z "${GEMINI_API_KEY:-}" ]; then
-            echo "::error::Configure the GEMINI_API_KEY secret"
+          if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+            echo "::error::Configure OPENCLAW_GATEWAY_TOKEN"
             exit 1
           fi
 
-          if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
-            echo "::error::Configure the OPENCLAW_GATEWAY_TOKEN secret"
+          if ! [[ "$REQUESTED_HOURS" =~ ^[1-6]$ ]]; then
+            echo "::error::Duration must be an integer from 1 to 6"
             exit 1
           fi
 
@@ -64,56 +61,79 @@ jobs:
 
           openclaw --version
 
-      - name: Test Gemini API
+      - name: Install tmate
         shell: bash
-        env:
-          MODEL: ${{ inputs.model }}
         run: |
           set -euo pipefail
 
-          HTTP_CODE="$(
-            curl --silent --show-error \
-              --output "$RUNNER_TEMP/gemini-response.json" \
-              --write-out "%{http_code}" \
-              --request POST \
-              "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent" \
-              --header "Content-Type: application/json" \
-              --header "x-goog-api-key: ${GEMINI_API_KEY}" \
-              --data '{
-                "contents": [{
-                  "role": "user",
-                  "parts": [{
-                    "text": "Reply with the word ready."
-                  }]
-                }],
-                "generationConfig": {
-                  "temperature": 0,
-                  "maxOutputTokens": 128
-                }
-              }'
+          sudo apt-get update
+          sudo apt-get install --yes tmate
+
+          tmate -V
+
+      - name: Start OAuth callback forwarding session
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TMATE_SOCKET="$RUNNER_TEMP/tmate.sock"
+
+          tmate -S "$TMATE_SOCKET" new-session -d
+          tmate -S "$TMATE_SOCKET" wait tmate-ready
+
+          SSH_COMMAND="$(
+            tmate -S "$TMATE_SOCKET" display \
+              -p '#{tmate_ssh}'
           )"
 
-          if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
-            echo "::error::Gemini API returned HTTP $HTTP_CODE"
-            jq -r '.error.message // "Unknown Gemini API error"' \
-              "$RUNNER_TEMP/gemini-response.json"
-            exit 1
-          fi
-
-          if ! jq -e '.candidates | length > 0' \
-            "$RUNNER_TEMP/gemini-response.json" >/dev/null; then
-            echo "::error::Gemini returned no candidate"
-            jq . "$RUNNER_TEMP/gemini-response.json"
-            exit 1
-          fi
-
-          RESPONSE="$(
-            jq -r \
-              '[.candidates[0].content.parts[]?.text // empty] | join("")' \
-              "$RUNNER_TEMP/gemini-response.json"
+          FORWARD_COMMAND="$(
+            printf '%s\n' "$SSH_COMMAND" |
+              sed 's/^ssh /ssh -L 8085:127.0.0.1:8085 /'
           )"
 
-          echo "Gemini API is working: $RESPONSE"
+          echo "TMATE_SOCKET=$TMATE_SOCKET" >> "$GITHUB_ENV"
+
+          {
+            echo "## Gemini CLI OAuth"
+            echo
+            echo "Run this command on your PC before opening the Google URL:"
+            echo
+            echo '```powershell'
+            echo "$FORWARD_COMMAND"
+            echo '```'
+            echo
+            echo "Keep the SSH connection open until authentication completes."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "======================================================"
+          echo "RUN THIS COMMAND ON YOUR PC:"
+          echo
+          echo "$FORWARD_COMMAND"
+          echo
+          echo "Keep it running, then open the Google OAuth URL."
+          echo "======================================================"
+
+      - name: Authenticate with Gemini CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Starting Gemini CLI authentication."
+          echo "Run the forwarding command shown in the previous step first."
+          echo "Then open the Google URL printed below."
+          echo
+
+          openclaw onboard \
+            --auth-choice google-gemini-cli
+
+      - name: Stop OAuth forwarding session
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${TMATE_SOCKET:-}" ]; then
+            tmate -S "$TMATE_SOCKET" kill-server \
+              2>/dev/null || true
+          fi
 
       - name: Configure OpenClaw
         shell: bash
@@ -125,13 +145,19 @@ jobs:
 
           mkdir -p "$HOME/.openclaw"
 
-          jq -n \
+          CONFIG="$HOME/.openclaw/openclaw.json"
+          TEMP_CONFIG="$RUNNER_TEMP/openclaw.json"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo '{}' > "$CONFIG"
+          fi
+
+          jq \
             --arg gatewayToken "$OPENCLAW_GATEWAY_TOKEN" \
-            --arg geminiApiKey "$GEMINI_API_KEY" \
             --arg telegramToken "${TELEGRAM_BOT_TOKEN:-}" \
             --arg model "$MODEL" \
-            '{
-              gateway: {
+            '
+              .gateway = {
                 mode: "local",
                 bind: "loopback",
                 auth: {
@@ -140,40 +166,33 @@ jobs:
                 controlUi: {
                   dangerouslyAllowHostHeaderOriginFallback: true
                 }
-              },
-              models: {
-                providers: {
-                  google: {
-                    apiKey: $geminiApiKey
+              }
+              |
+              .agents.defaults.model.primary =
+                ("google/" + $model)
+              |
+              .agents.defaults.models[
+                "google/" + $model
+              ] = {}
+              |
+              .commands.ownerAllowFrom = [680349125]
+              |
+              .channels = (
+                if $telegramToken == "" then
+                  (.channels // {})
+                else
+                  (.channels // {}) + {
+                    telegram: {
+                      enabled: true,
+                      botToken: $telegramToken,
+                      dmPolicy: "allowlist",
+                      allowFrom: [680349125]
+                    }
                   }
-                }
-              },
-              agents: {
-                defaults: {
-                  model: {
-                    primary: ("google/" + $model)
-                  },
-                  models: {
-                    ("google/" + $model): {}
-                  }
-                }
-              },
-              commands: {
-                ownerAllowFrom: [680349125]
-              },
-              channels: (
-                if $telegramToken == "" then {}
-                else {
-                  telegram: {
-                    enabled: true,
-                    botToken: $telegramToken,
-                    dmPolicy: "allowlist",
-                    allowFrom: [680349125]
-                  }
-                }
                 end
-              ),
-              tools: {
+              )
+              |
+              .tools = {
                 profile: "full",
                 allow: ["*"],
                 web: {
@@ -185,14 +204,15 @@ jobs:
                     enabled: true
                   }
                 }
-              },
-              messages: {
-                tts: {
-                  auto: "always",
-                  provider: "microsoft"
-                }
               }
-            }' > "$HOME/.openclaw/openclaw.json"
+              |
+              .messages.tts = {
+                auto: "always",
+                provider: "microsoft"
+              }
+            ' "$CONFIG" > "$TEMP_CONFIG"
+
+          mv "$TEMP_CONFIG" "$CONFIG"
 
           cat > "$HOME/.openclaw/exec-approvals.json" <<'EOF'
           {
@@ -206,7 +226,7 @@ jobs:
           EOF
 
           chmod 600 \
-            "$HOME/.openclaw/openclaw.json" \
+            "$CONFIG" \
             "$HOME/.openclaw/exec-approvals.json"
 
           openclaw doctor
@@ -360,11 +380,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! [[ "$REQUESTED_HOURS" =~ ^[1-6]$ ]]; then
-            echo "::error::Duration must be an integer from 1 to 6"
-            exit 1
-          fi
-
           END_TIME=$((SECONDS + REQUESTED_HOURS * 3600))
 
           echo "Gateway: $TUNNEL_URL"
@@ -395,10 +410,6 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          echo "===== Gemini response ====="
-          jq . "$RUNNER_TEMP/gemini-response.json" \
-            2>/dev/null || true
-
           echo "===== OpenClaw ====="
           tail -n 150 "$RUNNER_TEMP/openclaw.log" \
             2>/dev/null || true
