@@ -1,4 +1,4 @@
-name: Deploy Multimodal OpenClaw with Ollama
+name: Deploy OpenClaw Gateway with Gemini
 
 on:
   workflow_dispatch:
@@ -9,14 +9,13 @@ on:
         default: "6"
         type: string
       model:
-        description: Vision-capable Ollama model
+        description: Gemini model
         required: false
-        default: qwen3.5:0.8b
+        default: gemini-flash-latest
         type: choice
         options:
-          - qwen3.5:0.8b
-          - qwen3.5:2b
-          - qwen3.5:4b
+          - gemini-flash-latest
+          - gemini-flash-lite-latest
 
 permissions:
   contents: read
@@ -27,7 +26,8 @@ jobs:
     timeout-minutes: 370
 
     env:
-      OLLAMA_HOST: 127.0.0.1:11434
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
 
     steps:
@@ -39,6 +39,21 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Validate secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "::error::Configure the GEMINI_API_KEY repository secret"
+            exit 1
+          fi
+
+          if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+            echo "::error::Configure the OPENCLAW_GATEWAY_TOKEN repository secret"
+            exit 1
+          fi
+
       - name: Install OpenClaw
         shell: bash
         run: |
@@ -49,85 +64,39 @@ jobs:
 
           openclaw --version
 
-      - name: Install Ollama
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          curl --fail --location --show-error \
-            https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst \
-            --output "$RUNNER_TEMP/ollama.tar.zst"
-
-          sudo tar --use-compress-program=unzstd \
-            --extract \
-            --file="$RUNNER_TEMP/ollama.tar.zst" \
-            --directory=/usr
-
-          command -v ollama
-          ollama --version
-
-          nohup ollama serve \
-            > "$RUNNER_TEMP/ollama.log" 2>&1 &
-
-          OLLAMA_PID=$!
-          echo "OLLAMA_PID=$OLLAMA_PID" >> "$GITHUB_ENV"
-
-          for attempt in {1..60}; do
-            if curl --fail --silent \
-              http://127.0.0.1:11434/api/tags >/dev/null; then
-              echo "Ollama is running"
-              exit 0
-            fi
-
-            if ! kill -0 "$OLLAMA_PID" 2>/dev/null; then
-              echo "::error::Ollama exited unexpectedly"
-              cat "$RUNNER_TEMP/ollama.log"
-              exit 1
-            fi
-
-            sleep 2
-          done
-
-          echo "::error::Ollama failed to start"
-          cat "$RUNNER_TEMP/ollama.log"
-          exit 1
-
-      - name: Download model
-        shell: bash
-        env:
-          MODEL: ${{ inputs.model }}
-        run: |
-          set -euo pipefail
-          ollama pull "$MODEL"
-          ollama list
-
-      - name: Warm up model
+      - name: Test Gemini API
         shell: bash
         env:
           MODEL: ${{ inputs.model }}
         run: |
           set -euo pipefail
 
-          jq -nc \
-            --arg model "$MODEL" \
-            '{
-              model: $model,
-              prompt: "Reply with exactly: ready",
-              stream: false,
-              keep_alive: "6h",
-              options: {
-                num_ctx: 4096,
-                num_predict: 16,
-                temperature: 0
-              }
-            }' |
-            curl --fail --silent --show-error \
-              http://127.0.0.1:11434/api/generate \
+          RESPONSE="$(
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}" \
               --header "Content-Type: application/json" \
-              --data-binary @- |
-            jq -e '.response' >/dev/null
+              --data '{
+                "contents": [
+                  {
+                    "parts": [
+                      {
+                        "text": "Reply with exactly: ready"
+                      }
+                    ]
+                  }
+                ],
+                "generationConfig": {
+                  "temperature": 0,
+                  "maxOutputTokens": 16
+                }
+              }'
+          )"
 
-          echo "Model is ready"
+          echo "$RESPONSE" |
+            jq -e '.candidates[0].content.parts[0].text' >/dev/null
+
+          echo "Gemini API is working"
 
       - name: Configure OpenClaw
         shell: bash
@@ -137,15 +106,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
-            echo "::error::Configure OPENCLAW_GATEWAY_TOKEN"
-            exit 1
-          fi
-
           mkdir -p "$HOME/.openclaw"
 
           jq -n \
-            --arg token "$OPENCLAW_GATEWAY_TOKEN" \
+            --arg gatewayToken "$OPENCLAW_GATEWAY_TOKEN" \
+            --arg geminiApiKey "$GEMINI_API_KEY" \
             --arg telegramToken "${TELEGRAM_BOT_TOKEN:-}" \
             --arg model "$MODEL" \
             '{
@@ -153,7 +118,7 @@ jobs:
                 mode: "local",
                 bind: "loopback",
                 auth: {
-                  token: $token
+                  token: $gatewayToken
                 },
                 controlUi: {
                   dangerouslyAllowHostHeaderOriginFallback: true
@@ -161,19 +126,18 @@ jobs:
               },
               models: {
                 providers: {
-                  ollama: {
-                    baseUrl: "http://127.0.0.1:11434/v1",
-                    apiKey: "ollama"
+                  google: {
+                    apiKey: $geminiApiKey
                   }
                 }
               },
               agents: {
                 defaults: {
                   model: {
-                    primary: ("ollama/" + $model)
+                    primary: ("google/" + $model)
                   },
                   models: {
-                    ("ollama/" + $model): {}
+                    ("google/" + $model): {}
                   }
                 }
               },
@@ -235,7 +199,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          curl --fail --location --show-error \
+          curl --fail --location --silent --show-error \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             --output "$RUNNER_TEMP/cloudflared"
 
@@ -315,6 +279,8 @@ jobs:
           echo "DEVICE_APPROVER_PID=$DEVICE_APPROVER_PID" \
             >> "$GITHUB_ENV"
 
+          echo "Automatic device approver started"
+
       - name: Start Cloudflare Tunnel
         shell: bash
         run: |
@@ -340,6 +306,7 @@ jobs:
 
             if [ -n "$TUNNEL_URL" ]; then
               WEBSOCKET_URL="${TUNNEL_URL/https:/wss:}"
+
               echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
 
               {
@@ -349,7 +316,7 @@ jobs:
                 echo
                 echo "WebSocket: $WEBSOCKET_URL"
                 echo
-                echo "Model: \`${{ inputs.model }}\`"
+                echo "Model: \`google/${{ inputs.model }}\`"
                 echo
                 echo "Device requests are approved automatically."
               } >> "$GITHUB_STEP_SUMMARY"
@@ -390,7 +357,6 @@ jobs:
 
           while (( SECONDS < END_TIME )); do
             for PROCESS_ID in \
-              "$OLLAMA_PID" \
               "$OPENCLAW_PID" \
               "$DEVICE_APPROVER_PID" \
               "$CLOUDFLARED_PID"
@@ -401,11 +367,11 @@ jobs:
               fi
             done
 
-            curl --fail --silent \
-              http://127.0.0.1:11434/api/tags >/dev/null
-
-            curl --fail --silent \
-              http://127.0.0.1:18789 >/dev/null
+            if ! curl --fail --silent \
+              http://127.0.0.1:18789 >/dev/null; then
+              echo "::error::OpenClaw stopped responding"
+              exit 1
+            fi
 
             sleep 30
           done
@@ -414,12 +380,8 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          echo "===== Ollama ====="
-          tail -n 100 "$RUNNER_TEMP/ollama.log" \
-            2>/dev/null || true
-
           echo "===== OpenClaw ====="
-          tail -n 100 "$RUNNER_TEMP/openclaw.log" \
+          tail -n 150 "$RUNNER_TEMP/openclaw.log" \
             2>/dev/null || true
 
           echo "===== Device approver ====="
