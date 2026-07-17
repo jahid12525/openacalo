@@ -10,7 +10,7 @@ on:
       duration:
         description: 'Keep-alive duration in hours (max 6)'
         required: false
-        default: '5'
+        default: '6'
         type: string
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the configuration for AIAnd (OpenAI Compatible)
+          # Create the configuration for AIAnd
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -58,10 +58,10 @@ jobs:
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "qwen-3.6-27b"
+                  "primary": "qwen/qwen3.6-27b"
                 },
                 "models": {
-                  "qwen-3.6-27b": {}
+                  "qwen/qwen3.6-27b": {}
                 }
               }
             },
