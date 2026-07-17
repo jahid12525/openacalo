@@ -1,4 +1,4 @@
-name: Deploy OpenClaw Gateway with Ollama
+name: Deploy Multimodal OpenClaw with Ollama
 
 on:
   workflow_dispatch:
@@ -9,15 +9,14 @@ on:
         default: "6"
         type: string
       model:
-        description: Ollama model
+        description: Vision-capable Ollama model
         required: false
-        default: qwen3.5:4b
+        default: qwen3.5:0.8b
         type: choice
         options:
           - qwen3.5:0.8b
           - qwen3.5:2b
           - qwen3.5:4b
-          - qwen3.5:9b
 
 permissions:
   contents: read
@@ -58,8 +57,9 @@ jobs:
             --output "$RUNNER_TEMP/ollama.tar.zst"
 
           sudo tar --use-compress-program=unzstd \
-            -xf "$RUNNER_TEMP/ollama.tar.zst" \
-            -C /usr
+            --extract \
+            --file="$RUNNER_TEMP/ollama.tar.zst" \
+            --directory=/usr
 
           command -v ollama
           ollama --version
@@ -83,30 +83,46 @@ jobs:
             sleep 2
           done
 
+          echo "::error::Ollama failed to start"
           cat "$RUNNER_TEMP/ollama.log"
           exit 1
 
-      - name: Download and test Qwen
+      - name: Download model
+        shell: bash
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          ollama pull "$MODEL"
+          ollama list
+
+      - name: Warm up model
         shell: bash
         env:
           MODEL: ${{ inputs.model }}
         run: |
           set -euo pipefail
 
-          ollama pull "$MODEL"
-          ollama list
-
-          curl --fail --silent --show-error \
-            http://127.0.0.1:11434/api/generate \
-            --header "Content-Type: application/json" \
-            --data "$(jq -nc \
-              --arg model "$MODEL" \
-              '{
-                model: $model,
-                prompt: "Reply with exactly: ready",
-                stream: false
-              }')" |
+          jq -nc \
+            --arg model "$MODEL" \
+            '{
+              model: $model,
+              prompt: "Reply with exactly: ready",
+              stream: false,
+              keep_alive: "6h",
+              options: {
+                num_ctx: 4096,
+                num_predict: 16,
+                temperature: 0
+              }
+            }' |
+            curl --fail --silent --show-error \
+              http://127.0.0.1:11434/api/generate \
+              --header "Content-Type: application/json" \
+              --data-binary @- |
             jq -e '.response' >/dev/null
+
+          echo "Model is ready"
 
       - name: Configure OpenClaw
         shell: bash
@@ -124,7 +140,7 @@ jobs:
           mkdir -p "$HOME/.openclaw"
 
           jq -n \
-            --arg gatewayToken "$OPENCLAW_GATEWAY_TOKEN" \
+            --arg token "$OPENCLAW_GATEWAY_TOKEN" \
             --arg telegramToken "${TELEGRAM_BOT_TOKEN:-}" \
             --arg model "$MODEL" \
             '{
@@ -132,7 +148,7 @@ jobs:
                 mode: "local",
                 bind: "loopback",
                 auth: {
-                  token: $gatewayToken
+                  token: $token
                 },
                 controlUi: {
                   dangerouslyAllowHostHeaderOriginFallback: true
@@ -152,7 +168,14 @@ jobs:
                     primary: ("ollama/" + $model)
                   },
                   models: {
-                    ("ollama/" + $model): {}
+                    ("ollama/" + $model): {
+                      input: ["text", "image"],
+                      params: {
+                        num_ctx: 4096,
+                        num_predict: 512,
+                        temperature: 0.3
+                      }
+                    }
                   }
                 }
               },
@@ -248,6 +271,7 @@ jobs:
             sleep 2
           done
 
+          echo "::error::OpenClaw failed to start"
           cat "$RUNNER_TEMP/openclaw.log"
           exit 1
 
@@ -264,14 +288,8 @@ jobs:
 
             while IFS= read -r DEVICE_ID; do
               [ -n "$DEVICE_ID" ] || continue
-
-              echo "Approving device request: $DEVICE_ID"
-
-              if openclaw devices approve "$DEVICE_ID"; then
-                echo "Approved device: $DEVICE_ID"
-              else
-                echo "Could not approve $DEVICE_ID; retrying later"
-              fi
+              echo "Approving device: $DEVICE_ID"
+              openclaw devices approve "$DEVICE_ID" || true
             done < <(
               printf '%s\n' "$OUTPUT" |
                 grep -iE 'pending|pair|request' |
@@ -292,8 +310,6 @@ jobs:
           DEVICE_APPROVER_PID=$!
           echo "DEVICE_APPROVER_PID=$DEVICE_APPROVER_PID" \
             >> "$GITHUB_ENV"
-
-          echo "Automatic device approver started"
 
       - name: Start Cloudflare Tunnel
         shell: bash
@@ -318,16 +334,19 @@ jobs:
             )"
 
             if [ -n "$TUNNEL_URL" ]; then
+              WEBSOCKET_URL="${TUNNEL_URL/https:/wss:}"
               echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
 
               {
-                echo "## OpenClaw Gateway"
+                echo "## Multimodal OpenClaw Gateway"
                 echo
                 echo "Dashboard: $TUNNEL_URL"
                 echo
-                echo "WebSocket: ${TUNNEL_URL/https:/wss:}"
+                echo "WebSocket: $WEBSOCKET_URL"
                 echo
                 echo "Model: \`${{ inputs.model }}\`"
+                echo
+                echo "Inputs: text and image"
                 echo
                 echo "Device requests are approved automatically."
               } >> "$GITHUB_STEP_SUMMARY"
@@ -344,6 +363,7 @@ jobs:
             sleep 2
           done
 
+          echo "::error::Cloudflare Tunnel failed to start"
           cat "$RUNNER_TEMP/cloudflared.log"
           exit 1
 
@@ -362,7 +382,7 @@ jobs:
           END_TIME=$((SECONDS + REQUESTED_HOURS * 3600))
 
           echo "Gateway: $TUNNEL_URL"
-          echo "Device pairing requests will be approved automatically."
+          echo "Keeping gateway active for $REQUESTED_HOURS hour(s)"
 
           while (( SECONDS < END_TIME )); do
             for PROCESS_ID in \
