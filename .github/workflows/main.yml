@@ -1,8 +1,12 @@
-name: Deploy OpenClaw Gateway (Kimi via Ollama)
+name: Deploy OpenClaw Gateway with Cloudflare Tunnel
 
 on:
   workflow_dispatch:
     inputs:
+      openrouter_api_key:
+        description: 'Your OpenRouter API Key (sk-or-...)'
+        required: true
+        type: string
       duration:
         description: 'Keep-alive duration in hours (max 6)'
         required: false
@@ -22,25 +26,15 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install & Start Ollama
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-          # Start Ollama in the background
-          ollama serve > ollama.log 2>&1 &
-          echo "Waiting for Ollama to boot..."
-          sleep 10
-          # Pull the Kimi model
-          ollama pull kimi
-
       - name: Install OpenClaw CLI and Gateway
         run: |
           SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest
 
-      - name: Configure OpenClaw for Ollama
+      - name: Configure OpenClaw
         run: |
           mkdir -p ~/.openclaw
-          
-          # Create config using Ollama as the provider
+
+          # ─── Primary Configuration ───────────────────────────────────
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -48,19 +42,37 @@ jobs:
               "bind": "loopback",
               "auth": {
                 "token": "openclaw-github-actions-secure-token-2026"
+              },
+              "controlUi": {
+                "dangerouslyAllowHostHeaderOriginFallback": true
               }
             },
             "models": {
               "providers": {
-                "ollama": {
-                  "endpoint": "http://127.0.0.1:11434"
+                "openrouter": {
+                  "apiKey": "${{ inputs.openrouter_api_key }}",
+                  "rateLimit": {
+                    "requestsPerMinute": 10,
+                    "tokensPerMinute": 50000
+                  },
+                  "retry": {
+                    "maxRetries": 3,
+                    "baseDelayMs": 2000,
+                    "maxDelayMs": 30000
+                  }
                 }
               }
             },
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "ollama/kimi"
+                  "primary": "openrouter/google/gemini-2.0-flash-exp:free"
+                },
+                "models": {
+                  "openrouter/google/gemini-2.0-flash-exp:free": {
+                    "maxTokens": 2048,
+                    "temperature": 0.7
+                  }
                 }
               }
             },
@@ -74,6 +86,37 @@ jobs:
                 "dmPolicy": "allowlist",
                 "allowFrom": [680349125]
               }
+            },
+            "tools": {
+              "profile": "minimal",
+              "allow": ["web.search"],
+              "web": {
+                "search": {
+                  "enabled": true,
+                  "provider": "duckduckgo"
+                },
+                "fetch": {
+                  "enabled": false
+                }
+              }
+            },
+            "messages": {
+              "tts": {
+                "auto": "never",
+                "provider": "microsoft"
+              }
+            }
+          }
+          EOF
+
+          # ─── Exec Approvals (YOLO mode) ─────────────────────────────
+          cat << 'EOF' > ~/.openclaw/exec-approvals.json
+          {
+            "version": 1,
+            "defaults": {
+              "security": "full",
+              "ask": "off",
+              "askFallback": "full"
             }
           }
           EOF
@@ -86,13 +129,13 @@ jobs:
 
       - name: Start OpenClaw Gateway
         run: |
-          # Launch gateway pointing to the Ollama provider
           nohup openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
-          
-          echo "Waiting for OpenClaw Gateway to boot..."
-          for i in {1..15}; do
+
+          echo "⏳ Waiting for OpenClaw Gateway to boot..."
+          for i in {1..30}; do
             if openclaw gateway status 2>/dev/null | grep -q "running"; then
-              echo "Gateway successfully booted!"
+              echo "✅ Gateway successfully booted!"
+              openclaw gateway status
               break
             fi
             sleep 2
@@ -101,12 +144,58 @@ jobs:
       - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --url http://127.0.0.1:18789 > cloudflared.log 2>&1 &
-          sleep 12
-          TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' cloudflared.log | head -n 1)
-          echo "Access Dashboard: $TUNNEL_URL"
 
-      - name: Keep-Alive
+          echo "⏳ Waiting for Cloudflare Tunnel to generate public link..."
+          sleep 15
+
+          TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' cloudflared.log | head -n 1)
+
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "=========================================================================="
+            echo "🚀 OPENCLAW GATEWAY IS LIVE!"
+            echo "🔗 Dashboard : $TUNNEL_URL"
+            echo "🔑 Auth Token: openclaw-github-actions-secure-token-2026"
+            echo "🤖 Model     : openrouter/google/gemini-2.0-flash-exp:free"
+            echo "⏱️  Duration  : ${{ inputs.duration }} hour(s)"
+            echo "=========================================================================="
+          else
+            echo "⚠️ Could not retrieve Cloudflare Tunnel URL automatically."
+            echo "Checking cloudflared logs:"
+            tail -n 30 cloudflared.log
+            exit 1
+          fi
+
+      - name: Keep-Alive Daemon & Auto-Device Approver
         run: |
           HOURS=${{ inputs.duration }}
-          [ "$HOURS" -gt 6 ] && HOURS=6
-          sleep $((HOURS * 3600))
+          if [ "$HOURS" -gt 6 ]; then
+            HOURS=6
+          fi
+          TOTAL_SECONDS=$((HOURS * 3600))
+          ELAPSED_SECONDS=0
+
+          echo "🔄 Keeping runner alive for $HOURS hour(s)..."
+          echo "👀 Monitoring for incoming browser pairing requests..."
+
+          while [ $ELAPSED_SECONDS -lt $TOTAL_SECONDS ]; do
+            # Auto-approve pending device pairing requests
+            PENDING_ID=$(openclaw devices list 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
+
+            if [ -n "$PENDING_ID" ]; then
+              echo "🔒 [Auto-Auth] Detected connection request ID: $PENDING_ID"
+              openclaw devices approve "$PENDING_ID"
+              echo "✅ [Auto-Auth] Device successfully paired!"
+            fi
+
+            # Log heartbeat every 5 minutes
+            if [ $((ELAPSED_SECONDS % 300)) -eq 0 ]; then
+              REMAINING=$(( (TOTAL_SECONDS - ELAPSED_SECONDS) / 60 ))
+              echo "💓 [Heartbeat] Still alive — $REMAINING min remaining"
+            fi
+
+            sleep 30
+            ELAPSED_SECONDS=$((ELAPSED_SECONDS + 30))
+          done
+
+          echo "⏰ Time's up! Shutting down gracefully..."
+          openclaw gateway stop 2>/dev/null || true
