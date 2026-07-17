@@ -3,8 +3,8 @@ name: Deploy OpenClaw Gateway with Cloudflare Tunnel
 on:
   workflow_dispatch:
     inputs:
-      openrouter_api_key:
-        description: 'Your OpenRouter API Key (sk-or-...)'
+      gemini_api_key:
+        description: 'Your Gemini API Key'
         required: true
         type: string
       duration:
@@ -34,7 +34,7 @@ jobs:
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the primary configuration with all tools allowed and free options configured
+          # Create the primary configuration using Gemini 3.5 Flash
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -49,18 +49,18 @@ jobs:
             },
             "models": {
               "providers": {
-                "openrouter": {
-                  "apiKey": "${{ inputs.openrouter_api_key }}"
+                "google": {
+                  "apiKey": "${{ inputs.gemini_api_key }}"
                 }
               }
             },
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "openrouter/auto"
+                  "primary": "google/gemini-3.5-flash"
                 },
                 "models": {
-                  "openrouter/auto": {}
+                  "google/gemini-3.5-flash": {}
                 }
               }
             },
