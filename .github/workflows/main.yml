@@ -48,7 +48,7 @@ jobs:
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the primary configuration pointing to Ollama
+          # Create the primary configuration pointing to Ollama with a dummy API key
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -64,7 +64,8 @@ jobs:
             "models": {
               "providers": {
                 "ollama": {
-                  "baseUrl": "http://127.0.0.1:11434"
+                  "baseUrl": "http://127.0.0.1:11434",
+                  "apiKey": "ollama"
                 }
               }
             },
