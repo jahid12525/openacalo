@@ -1,10 +1,10 @@
-name: Deploy OpenClaw Gateway (MiniMax)
+name: Deploy OpenClaw Gateway with Cloudflare Tunnel
 
 on:
   workflow_dispatch:
     inputs:
-      minimax_api_key:
-        description: 'Your MiniMax API Key'
+      openrouter_api_key:
+        description: 'Your OpenRouter API Key (sk-or-...)'
         required: true
         type: string
       duration:
@@ -34,7 +34,7 @@ jobs:
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the configuration for MiniMax
+          # Create the primary configuration with all tools allowed and free options configured
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -49,21 +49,18 @@ jobs:
             },
             "models": {
               "providers": {
-                "minimax": {
-                  "apiKey": "${{ inputs.minimax_api_key }}"
+                "openrouter": {
+                  "apiKey": "${{ inputs.openrouter_api_key }}"
                 }
               }
             },
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "minimax/MiniMax-M3"
+                  "primary": "openrouter/auto"
                 },
                 "models": {
-                  "minimax/MiniMax-M3": {},
-                  "minimax/image-01": {},
-                  "minimax-portal/image-01": {},
-                  "minimax/MiniMax-VL-01": {}
+                  "openrouter/auto": {}
                 }
               }
             },
@@ -84,7 +81,7 @@ jobs:
               "web": {
                 "search": {
                   "enabled": true,
-                  "provider": "minimax"
+                  "provider": "duckduckgo"
                 },
                 "fetch": {
                   "enabled": true
@@ -100,7 +97,7 @@ jobs:
           }
           EOF
 
-          # Create exec approvals config
+          # Create exec approvals config to auto-approve host execution commands (YOLO mode)
           cat << 'EOF' > ~/.openclaw/exec-approvals.json
           {
             "version": 1,
@@ -149,6 +146,8 @@ jobs:
             echo "=========================================================================="
           else
             echo "⚠️ Could not retrieve Cloudflare Tunnel URL automatically."
+            echo "Checking cloudflared logs:"
+            cat cloudflared.log | tail -n 20
             exit 1
           fi
 
@@ -161,7 +160,7 @@ jobs:
           TOTAL_SECONDS=$((HOURS * 3600))
           ELAPSED_SECONDS=0
           
-          echo "Keeping runner alive for $HOURS hour(s)..."
+          echo "Keeping runner alive for $HOURS hour(s). Monitoring for incoming browser pairing requests..."
           
           while [ $ELAPSED_SECONDS -lt $TOTAL_SECONDS ]; do
             PENDING_ID=$(openclaw devices list 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
@@ -169,6 +168,7 @@ jobs:
             if [ -n "$PENDING_ID" ]; then
               echo "🔒 [Auto-Auth] Detected connection request ID: $PENDING_ID"
               openclaw devices approve "$PENDING_ID"
+              echo "✅ [Auto-Auth] Device successfully paired!"
             fi
             
             sleep 4
