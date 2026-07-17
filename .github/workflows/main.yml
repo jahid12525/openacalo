@@ -12,6 +12,11 @@ on:
         required: false
         default: '6'
         type: string
+      rate_limit_delay:
+        description: 'Delay between requests in milliseconds (default 1000)'
+        required: false
+        default: '1000'
+        type: string
 
 jobs:
   run-openclaw:
@@ -33,8 +38,8 @@ jobs:
       - name: Configure OpenClaw
         run: |
           mkdir -p ~/.openclaw
-
-          # ─── Primary Configuration ───────────────────────────────────
+          
+          # Create the primary configuration with rate limit handling
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -51,27 +56,21 @@ jobs:
               "providers": {
                 "openrouter": {
                   "apiKey": "${{ inputs.openrouter_api_key }}",
-                  "rateLimit": {
-                    "requestsPerMinute": 10,
-                    "tokensPerMinute": 50000
-                  },
-                  "retry": {
-                    "maxRetries": 3,
-                    "baseDelayMs": 2000,
-                    "maxDelayMs": 30000
-                  }
+                  "rateLimitDelay": ${{ inputs.rate_limit_delay }},
+                  "retryAttempts": 3,
+                  "retryBackoffMultiplier": 2
                 }
               }
             },
             "agents": {
               "defaults": {
                 "model": {
-                  "primary": "openrouter/google/gemini-2.0-flash-exp:free"
+                  "primary": "openrouter/auto"
                 },
                 "models": {
-                  "openrouter/google/gemini-2.0-flash-exp:free": {
-                    "maxTokens": 2048,
-                    "temperature": 0.7
+                  "openrouter/auto": {
+                    "requestTimeout": 30000,
+                    "maxRetries": 3
                   }
                 }
               }
@@ -88,28 +87,30 @@ jobs:
               }
             },
             "tools": {
-              "profile": "minimal",
-              "allow": ["web.search"],
+              "profile": "full",
+              "allow": ["*"],
               "web": {
                 "search": {
                   "enabled": true,
-                  "provider": "duckduckgo"
+                  "provider": "duckduckgo",
+                  "requestDelay": 500
                 },
                 "fetch": {
-                  "enabled": false
+                  "enabled": true,
+                  "requestDelay": 500
                 }
               }
             },
             "messages": {
               "tts": {
-                "auto": "never",
+                "auto": "always",
                 "provider": "microsoft"
               }
             }
           }
           EOF
 
-          # ─── Exec Approvals (YOLO mode) ─────────────────────────────
+          # Create exec approvals config
           cat << 'EOF' > ~/.openclaw/exec-approvals.json
           {
             "version": 1,
@@ -130,11 +131,11 @@ jobs:
       - name: Start OpenClaw Gateway
         run: |
           nohup openclaw gateway --port 18789 --verbose > openclaw.log 2>&1 &
-
-          echo "⏳ Waiting for OpenClaw Gateway to boot..."
-          for i in {1..30}; do
+          
+          echo "Waiting for OpenClaw Gateway to boot..."
+          for i in {1..15}; do
             if openclaw gateway status 2>/dev/null | grep -q "running"; then
-              echo "✅ Gateway successfully booted!"
+              echo "Gateway successfully booted!"
               openclaw gateway status
               break
             fi
@@ -144,24 +145,23 @@ jobs:
       - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --url http://127.0.0.1:18789 > cloudflared.log 2>&1 &
-
-          echo "⏳ Waiting for Cloudflare Tunnel to generate public link..."
-          sleep 15
-
+          
+          echo "Waiting for Cloudflare Tunnel to generate public link..."
+          sleep 12
+          
           TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' cloudflared.log | head -n 1)
-
+          
           if [ -n "$TUNNEL_URL" ]; then
             echo "=========================================================================="
             echo "🚀 OPENCLAW GATEWAY IS LIVE!"
-            echo "🔗 Dashboard : $TUNNEL_URL"
-            echo "🔑 Auth Token: openclaw-github-actions-secure-token-2026"
-            echo "🤖 Model     : openrouter/google/gemini-2.0-flash-exp:free"
-            echo "⏱️  Duration  : ${{ inputs.duration }} hour(s)"
+            echo "🔗 Access Dashboard: $TUNNEL_URL"
+            echo "🔑 Secret Token: openclaw-github-actions-secure-token-2026"
             echo "=========================================================================="
+            echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
           else
             echo "⚠️ Could not retrieve Cloudflare Tunnel URL automatically."
             echo "Checking cloudflared logs:"
-            tail -n 30 cloudflared.log
+            cat cloudflared.log | tail -n 20
             exit 1
           fi
 
@@ -173,29 +173,26 @@ jobs:
           fi
           TOTAL_SECONDS=$((HOURS * 3600))
           ELAPSED_SECONDS=0
-
-          echo "🔄 Keeping runner alive for $HOURS hour(s)..."
-          echo "👀 Monitoring for incoming browser pairing requests..."
-
+          
+          echo "Keeping runner alive for $HOURS hour(s). Monitoring for incoming browser pairing requests..."
+          
           while [ $ELAPSED_SECONDS -lt $TOTAL_SECONDS ]; do
-            # Auto-approve pending device pairing requests
             PENDING_ID=$(openclaw devices list 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
-
+            
             if [ -n "$PENDING_ID" ]; then
               echo "🔒 [Auto-Auth] Detected connection request ID: $PENDING_ID"
               openclaw devices approve "$PENDING_ID"
               echo "✅ [Auto-Auth] Device successfully paired!"
             fi
-
-            # Log heartbeat every 5 minutes
-            if [ $((ELAPSED_SECONDS % 300)) -eq 0 ]; then
-              REMAINING=$(( (TOTAL_SECONDS - ELAPSED_SECONDS) / 60 ))
-              echo "💓 [Heartbeat] Still alive — $REMAINING min remaining"
-            fi
-
-            sleep 30
-            ELAPSED_SECONDS=$((ELAPSED_SECONDS + 30))
+            
+            sleep 4
+            ELAPSED_SECONDS=$((ELAPSED_SECONDS + 4))
           done
 
-          echo "⏰ Time's up! Shutting down gracefully..."
-          openclaw gateway stop 2>/dev/null || true
+      - name: Cleanup on Exit
+        if: always()
+        run: |
+          echo "Shutting down services..."
+          pkill -f "openclaw gateway" || true
+          pkill -f "cloudflared tunnel" || true
+          echo "Cleanup complete."
