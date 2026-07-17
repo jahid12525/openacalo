@@ -45,12 +45,12 @@ jobs:
           set -euo pipefail
 
           if [ -z "${GEMINI_API_KEY:-}" ]; then
-            echo "::error::Configure the GEMINI_API_KEY repository secret"
+            echo "::error::Configure the GEMINI_API_KEY secret"
             exit 1
           fi
 
           if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
-            echo "::error::Configure the OPENCLAW_GATEWAY_TOKEN repository secret"
+            echo "::error::Configure the OPENCLAW_GATEWAY_TOKEN secret"
             exit 1
           fi
 
@@ -71,32 +71,49 @@ jobs:
         run: |
           set -euo pipefail
 
-          RESPONSE="$(
-            curl --fail-with-body --silent --show-error \
+          HTTP_CODE="$(
+            curl --silent --show-error \
+              --output "$RUNNER_TEMP/gemini-response.json" \
+              --write-out "%{http_code}" \
               --request POST \
-              "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}" \
+              "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent" \
               --header "Content-Type: application/json" \
+              --header "x-goog-api-key: ${GEMINI_API_KEY}" \
               --data '{
-                "contents": [
-                  {
-                    "parts": [
-                      {
-                        "text": "Reply with exactly: ready"
-                      }
-                    ]
-                  }
-                ],
+                "contents": [{
+                  "role": "user",
+                  "parts": [{
+                    "text": "Reply with the word ready."
+                  }]
+                }],
                 "generationConfig": {
                   "temperature": 0,
-                  "maxOutputTokens": 16
+                  "maxOutputTokens": 128
                 }
               }'
           )"
 
-          echo "$RESPONSE" |
-            jq -e '.candidates[0].content.parts[0].text' >/dev/null
+          if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
+            echo "::error::Gemini API returned HTTP $HTTP_CODE"
+            jq -r '.error.message // "Unknown Gemini API error"' \
+              "$RUNNER_TEMP/gemini-response.json"
+            exit 1
+          fi
 
-          echo "Gemini API is working"
+          if ! jq -e '.candidates | length > 0' \
+            "$RUNNER_TEMP/gemini-response.json" >/dev/null; then
+            echo "::error::Gemini returned no candidate"
+            jq . "$RUNNER_TEMP/gemini-response.json"
+            exit 1
+          fi
+
+          RESPONSE="$(
+            jq -r \
+              '[.candidates[0].content.parts[]?.text // empty] | join("")' \
+              "$RUNNER_TEMP/gemini-response.json"
+          )"
+
+          echo "Gemini API is working: $RESPONSE"
 
       - name: Configure OpenClaw
         shell: bash
@@ -279,8 +296,6 @@ jobs:
           echo "DEVICE_APPROVER_PID=$DEVICE_APPROVER_PID" \
             >> "$GITHUB_ENV"
 
-          echo "Automatic device approver started"
-
       - name: Start Cloudflare Tunnel
         shell: bash
         run: |
@@ -380,6 +395,10 @@ jobs:
         if: failure()
         shell: bash
         run: |
+          echo "===== Gemini response ====="
+          jq . "$RUNNER_TEMP/gemini-response.json" \
+            2>/dev/null || true
+
           echo "===== OpenClaw ====="
           tail -n 150 "$RUNNER_TEMP/openclaw.log" \
             2>/dev/null || true
