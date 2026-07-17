@@ -12,11 +12,6 @@ on:
         required: false
         default: '6'
         type: string
-      rate_limit_delay:
-        description: 'Delay between requests in milliseconds (default 1000)'
-        required: false
-        default: '1000'
-        type: string
 
 jobs:
   run-openclaw:
@@ -39,7 +34,7 @@ jobs:
         run: |
           mkdir -p ~/.openclaw
           
-          # Create the primary configuration with rate limit handling
+          # Create the primary configuration with all tools allowed and free options configured
           cat << 'EOF' > ~/.openclaw/openclaw.json
           {
             "gateway": {
@@ -55,10 +50,7 @@ jobs:
             "models": {
               "providers": {
                 "openrouter": {
-                  "apiKey": "${{ inputs.openrouter_api_key }}",
-                  "rateLimitDelay": ${{ inputs.rate_limit_delay }},
-                  "retryAttempts": 3,
-                  "retryBackoffMultiplier": 2
+                  "apiKey": "${{ inputs.openrouter_api_key }}"
                 }
               }
             },
@@ -68,10 +60,7 @@ jobs:
                   "primary": "openrouter/auto"
                 },
                 "models": {
-                  "openrouter/auto": {
-                    "requestTimeout": 30000,
-                    "maxRetries": 3
-                  }
+                  "openrouter/auto": {}
                 }
               }
             },
@@ -92,12 +81,10 @@ jobs:
               "web": {
                 "search": {
                   "enabled": true,
-                  "provider": "duckduckgo",
-                  "requestDelay": 500
+                  "provider": "duckduckgo"
                 },
                 "fetch": {
-                  "enabled": true,
-                  "requestDelay": 500
+                  "enabled": true
                 }
               }
             },
@@ -110,7 +97,7 @@ jobs:
           }
           EOF
 
-          # Create exec approvals config
+          # Create exec approvals config to auto-approve host execution commands (YOLO mode)
           cat << 'EOF' > ~/.openclaw/exec-approvals.json
           {
             "version": 1,
@@ -157,7 +144,6 @@ jobs:
             echo "🔗 Access Dashboard: $TUNNEL_URL"
             echo "🔑 Secret Token: openclaw-github-actions-secure-token-2026"
             echo "=========================================================================="
-            echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
           else
             echo "⚠️ Could not retrieve Cloudflare Tunnel URL automatically."
             echo "Checking cloudflared logs:"
@@ -188,11 +174,3 @@ jobs:
             sleep 4
             ELAPSED_SECONDS=$((ELAPSED_SECONDS + 4))
           done
-
-      - name: Cleanup on Exit
-        if: always()
-        run: |
-          echo "Shutting down services..."
-          pkill -f "openclaw gateway" || true
-          pkill -f "cloudflared tunnel" || true
-          echo "Cleanup complete."
