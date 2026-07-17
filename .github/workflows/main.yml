@@ -64,9 +64,7 @@ jobs:
           command -v ollama
           ollama --version
 
-          nohup ollama serve \
-            > "$RUNNER_TEMP/ollama.log" 2>&1 &
-
+          nohup ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
           OLLAMA_PID=$!
           echo "OLLAMA_PID=$OLLAMA_PID" >> "$GITHUB_ENV"
 
@@ -78,7 +76,6 @@ jobs:
             fi
 
             if ! kill -0 "$OLLAMA_PID" 2>/dev/null; then
-              echo "::error::Ollama exited unexpectedly"
               cat "$RUNNER_TEMP/ollama.log"
               exit 1
             fi
@@ -86,41 +83,30 @@ jobs:
             sleep 2
           done
 
-          echo "::error::Ollama failed to start"
           cat "$RUNNER_TEMP/ollama.log"
           exit 1
 
-      - name: Download Qwen model
+      - name: Download and test Qwen
         shell: bash
         env:
           MODEL: ${{ inputs.model }}
         run: |
           set -euo pipefail
+
           ollama pull "$MODEL"
           ollama list
 
-      - name: Test Qwen model
-        shell: bash
-        env:
-          MODEL: ${{ inputs.model }}
-        run: |
-          set -euo pipefail
-
-          RESPONSE="$(
-            curl --fail --silent --show-error \
-              http://127.0.0.1:11434/api/generate \
-              --header "Content-Type: application/json" \
-              --data "$(jq -nc \
-                --arg model "$MODEL" \
-                '{
-                  model: $model,
-                  prompt: "Reply with exactly: ready",
-                  stream: false
-                }')"
-          )"
-
-          echo "$RESPONSE" | jq -e '.response' >/dev/null
-          echo "Qwen model responded successfully"
+          curl --fail --silent --show-error \
+            http://127.0.0.1:11434/api/generate \
+            --header "Content-Type: application/json" \
+            --data "$(jq -nc \
+              --arg model "$MODEL" \
+              '{
+                model: $model,
+                prompt: "Reply with exactly: ready",
+                stream: false
+              }')" |
+            jq -e '.response' >/dev/null
 
       - name: Configure OpenClaw
         shell: bash
@@ -131,7 +117,7 @@ jobs:
           set -euo pipefail
 
           if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
-            echo "::error::Configure the OPENCLAW_GATEWAY_TOKEN secret"
+            echo "::error::Configure OPENCLAW_GATEWAY_TOKEN"
             exit 1
           fi
 
@@ -206,7 +192,20 @@ jobs:
               }
             }' > "$HOME/.openclaw/openclaw.json"
 
-          chmod 600 "$HOME/.openclaw/openclaw.json"
+          cat > "$HOME/.openclaw/exec-approvals.json" <<'EOF'
+          {
+            "version": 1,
+            "defaults": {
+              "security": "full",
+              "ask": "off",
+              "askFallback": "full"
+            }
+          }
+          EOF
+
+          chmod 600 \
+            "$HOME/.openclaw/openclaw.json" \
+            "$HOME/.openclaw/exec-approvals.json"
 
       - name: Install Cloudflare Tunnel
         shell: bash
@@ -242,7 +241,6 @@ jobs:
             fi
 
             if ! kill -0 "$OPENCLAW_PID" 2>/dev/null; then
-              echo "::error::OpenClaw exited unexpectedly"
               cat "$RUNNER_TEMP/openclaw.log"
               exit 1
             fi
@@ -250,9 +248,52 @@ jobs:
             sleep 2
           done
 
-          echo "::error::OpenClaw Gateway failed to start"
           cat "$RUNNER_TEMP/openclaw.log"
           exit 1
+
+      - name: Start automatic device approver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$RUNNER_TEMP/approve-devices.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+
+          while true; do
+            OUTPUT="$(openclaw devices list 2>/dev/null || true)"
+
+            while IFS= read -r DEVICE_ID; do
+              [ -n "$DEVICE_ID" ] || continue
+
+              echo "Approving device request: $DEVICE_ID"
+
+              if openclaw devices approve "$DEVICE_ID"; then
+                echo "Approved device: $DEVICE_ID"
+              else
+                echo "Could not approve $DEVICE_ID; retrying later"
+              fi
+            done < <(
+              printf '%s\n' "$OUTPUT" |
+                grep -iE 'pending|pair|request' |
+                grep -oE \
+                  '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
+                sort -u || true
+            )
+
+            sleep 3
+          done
+          SCRIPT
+
+          chmod +x "$RUNNER_TEMP/approve-devices.sh"
+
+          nohup "$RUNNER_TEMP/approve-devices.sh" \
+            > "$RUNNER_TEMP/device-approver.log" 2>&1 &
+
+          DEVICE_APPROVER_PID=$!
+          echo "DEVICE_APPROVER_PID=$DEVICE_APPROVER_PID" \
+            >> "$GITHUB_ENV"
+
+          echo "Automatic device approver started"
 
       - name: Start Cloudflare Tunnel
         shell: bash
@@ -284,7 +325,11 @@ jobs:
                 echo
                 echo "Dashboard: $TUNNEL_URL"
                 echo
+                echo "WebSocket: ${TUNNEL_URL/https:/wss:}"
+                echo
                 echo "Model: \`${{ inputs.model }}\`"
+                echo
+                echo "Device requests are approved automatically."
               } >> "$GITHUB_STEP_SUMMARY"
 
               echo "::notice title=OpenClaw Gateway::$TUNNEL_URL"
@@ -292,7 +337,6 @@ jobs:
             fi
 
             if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
-              echo "::error::Cloudflare Tunnel exited unexpectedly"
               cat "$RUNNER_TEMP/cloudflared.log"
               exit 1
             fi
@@ -300,7 +344,6 @@ jobs:
             sleep 2
           done
 
-          echo "::error::Cloudflare Tunnel failed to start"
           cat "$RUNNER_TEMP/cloudflared.log"
           exit 1
 
@@ -319,12 +362,13 @@ jobs:
           END_TIME=$((SECONDS + REQUESTED_HOURS * 3600))
 
           echo "Gateway: $TUNNEL_URL"
-          echo "Keeping it active for $REQUESTED_HOURS hour(s)"
+          echo "Device pairing requests will be approved automatically."
 
           while (( SECONDS < END_TIME )); do
             for PROCESS_ID in \
               "$OLLAMA_PID" \
               "$OPENCLAW_PID" \
+              "$DEVICE_APPROVER_PID" \
               "$CLOUDFLARED_PID"
             do
               if ! kill -0 "$PROCESS_ID" 2>/dev/null; then
@@ -333,17 +377,11 @@ jobs:
               fi
             done
 
-            if ! curl --fail --silent \
-              http://127.0.0.1:11434/api/tags >/dev/null; then
-              echo "::error::Ollama stopped responding"
-              exit 1
-            fi
+            curl --fail --silent \
+              http://127.0.0.1:11434/api/tags >/dev/null
 
-            if ! curl --fail --silent \
-              http://127.0.0.1:18789 >/dev/null; then
-              echo "::error::OpenClaw stopped responding"
-              exit 1
-            fi
+            curl --fail --silent \
+              http://127.0.0.1:18789 >/dev/null
 
             sleep 30
           done
@@ -353,11 +391,13 @@ jobs:
         shell: bash
         run: |
           echo "===== Ollama ====="
-          tail -n 100 "$RUNNER_TEMP/ollama.log" \
-            2>/dev/null || true
+          tail -n 100 "$RUNNER_TEMP/ollama.log" 2>/dev/null || true
 
           echo "===== OpenClaw ====="
-          tail -n 100 "$RUNNER_TEMP/openclaw.log" \
+          tail -n 100 "$RUNNER_TEMP/openclaw.log" 2>/dev/null || true
+
+          echo "===== Device approver ====="
+          tail -n 100 "$RUNNER_TEMP/device-approver.log" \
             2>/dev/null || true
 
           echo "===== Cloudflared ====="
