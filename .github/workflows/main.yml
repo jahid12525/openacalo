@@ -1,4 +1,4 @@
-name: Deploy OpenClaw Gateway with Gemini API Pool
+name: Deploy OpenClaw Gateway with NVIDIA NIM API Pool
 
 on:
   workflow_dispatch:
@@ -9,13 +9,15 @@ on:
         default: "6"
         type: string
       model:
-        description: Gemini model
+        description: NVIDIA NIM model
         required: false
-        default: gemini-flash-latest
+        default: nvidia/nemotron-3-ultra-550b-a55b
         type: choice
         options:
-          - gemini-flash-latest
-          - gemini-flash-lite-latest
+          - nvidia/nemotron-3-ultra-550b-a55b
+          - moonshotai/kimi-k2.6
+          - deepseek-ai/deepseek-v4-pro
+          - z-ai/glm-5.2
 
 permissions:
   contents: read
@@ -27,7 +29,7 @@ jobs:
 
     env:
       OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
-      GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+      NVIDIA_API_KEYS: ${{ secrets.NVIDIA_API_KEYS }}
 
     steps:
       - name: Checkout code
@@ -50,8 +52,8 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${GEMINI_API_KEYS:-}" ]; then
-            echo "::error::Configure GEMINI_API_KEYS"
+          if [ -z "${NVIDIA_API_KEYS:-}" ]; then
+            echo "::error::Configure NVIDIA_API_KEYS"
             exit 1
           fi
 
@@ -71,14 +73,14 @@ jobs:
 
             echo "::add-mask::$KEY"
             KEY_COUNT=$((KEY_COUNT + 1))
-          done <<< "$GEMINI_API_KEYS"
+          done <<< "$NVIDIA_API_KEYS"
 
           if [ "$KEY_COUNT" -eq 0 ]; then
-            echo "::error::GEMINI_API_KEYS contains no API keys"
+            echo "::error::NVIDIA_API_KEYS contains no API keys"
             exit 1
           fi
 
-          echo "Found $KEY_COUNT Gemini API key(s)"
+          echo "Found $KEY_COUNT NVIDIA API key(s)"
 
       - name: Install OpenClaw
         shell: bash
@@ -90,7 +92,15 @@ jobs:
 
           openclaw --version
 
-      - name: Select working Gemini API key
+      - name: Install Camoufox browser plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          npm install --global @askjo/camofox-browser
+          openclaw plugins install @askjo/camofox-browser
+
+      - name: Select working NVIDIA API key
         shell: bash
         env:
           MODEL: ${{ inputs.model }}
@@ -110,68 +120,73 @@ jobs:
 
             INDEX=$((INDEX + 1))
             echo "::add-mask::$KEY"
-            echo "Testing Gemini API key $INDEX..."
+            echo "Testing NVIDIA API key $INDEX..."
 
-            RESPONSE_FILE="$RUNNER_TEMP/gemini-response-$INDEX.json"
+            RESPONSE_FILE="$RUNNER_TEMP/nim-response-$INDEX.json"
 
             HTTP_CODE="$(
               curl \
                 --silent \
                 --show-error \
                 --connect-timeout 15 \
-                --max-time 60 \
+                --max-time 120 \
                 --output "$RESPONSE_FILE" \
                 --write-out "%{http_code}" \
                 --request POST \
-                "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent" \
+                "https://integrate.api.nvidia.com/v1/chat/completions" \
                 --header "Content-Type: application/json" \
-                --header "x-goog-api-key: ${KEY}" \
-                --data '{
-                  "contents": [{
-                    "role": "user",
-                    "parts": [{
-                      "text": "Reply with ready."
-                    }]
+                --header "Authorization: Bearer ${KEY}" \
+                --data "$(jq -n --arg model "$MODEL" '{
+                  model: $model,
+                  messages: [{
+                    role: "user",
+                    content: "Reply with ready."
                   }],
-                  "generationConfig": {
-                    "temperature": 0,
-                    "maxOutputTokens": 32
-                  }
-                }' || true
+                  temperature: 0,
+                  max_tokens: 32
+                }')" || true
             )"
 
             if [[ "$HTTP_CODE" =~ ^2[0-9][0-9]$ ]] &&
-               jq -e '.candidates | length > 0' \
-                 "$RESPONSE_FILE" >/dev/null 2>&1; then
+              jq -e '.choices | length > 0' \
+                "$RESPONSE_FILE" >/dev/null 2>&1; then
               SELECTED_KEY="$KEY"
               SELECTED_INDEX="$INDEX"
-              echo "Gemini API key $INDEX is working"
+              echo "NVIDIA API key $INDEX is working"
               break
             fi
 
             ERROR_MESSAGE="$(
-              jq -r '.error.message // "Request failed"' \
+              jq -r '.error.message // .detail // "Request failed"' \
                 "$RESPONSE_FILE" 2>/dev/null ||
                 echo "Request failed"
             )"
 
-            echo "::warning::Gemini key $INDEX failed with HTTP ${HTTP_CODE:-000}: $ERROR_MESSAGE"
-          done <<< "$GEMINI_API_KEYS"
+            echo "::warning::NVIDIA key $INDEX failed with HTTP ${HTTP_CODE:-000}: $ERROR_MESSAGE"
+          done <<< "$NVIDIA_API_KEYS"
 
           if [ -z "$SELECTED_KEY" ]; then
-            echo "::error::None of the Gemini API keys worked"
+            echo "::error::None of the NVIDIA API keys worked"
             exit 1
           fi
 
           echo "::add-mask::$SELECTED_KEY"
 
           {
-            echo "GEMINI_API_KEY=$SELECTED_KEY"
-            echo "GOOGLE_API_KEY=$SELECTED_KEY"
-            echo "SELECTED_GEMINI_KEY_INDEX=$SELECTED_INDEX"
+            echo "NVIDIA_API_KEY=$SELECTED_KEY"
+            echo "SELECTED_NVIDIA_KEY_INDEX=$SELECTED_INDEX"
           } >> "$GITHUB_ENV"
 
-          echo "Selected Gemini API key $SELECTED_INDEX"
+          echo "Selected NVIDIA API key $SELECTED_INDEX"
+
+      - name: Generate Camoufox API key
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CAMOFOX_API_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::${CAMOFOX_API_KEY}"
+          echo "CAMOFOX_API_KEY=${CAMOFOX_API_KEY}" >> "$GITHUB_ENV"
 
       - name: Configure OpenClaw
         shell: bash
@@ -185,7 +200,7 @@ jobs:
 
           jq -n \
             --arg gatewayToken "$OPENCLAW_GATEWAY_TOKEN" \
-            --arg geminiApiKey "$GEMINI_API_KEY" \
+            --arg nvidiaApiKey "$NVIDIA_API_KEY" \
             --arg telegramToken "${TELEGRAM_BOT_TOKEN:-}" \
             --arg model "$MODEL" \
             '{
@@ -199,20 +214,25 @@ jobs:
                   dangerouslyAllowHostHeaderOriginFallback: true
                 }
               },
+              env: {
+                NVIDIA_API_KEY: $nvidiaApiKey
+              },
               models: {
                 providers: {
-                  google: {
-                    apiKey: $geminiApiKey
+                  nvidia: {
+                    baseUrl: "https://integrate.api.nvidia.com/v1",
+                    api: "openai-completions",
+                    apiKey: $nvidiaApiKey
                   }
                 }
               },
               agents: {
                 defaults: {
                   model: {
-                    primary: ("google/" + $model)
+                    primary: ("nvidia/" + $model)
                   },
                   models: {
-                    ("google/" + $model): {}
+                    ("nvidia/" + $model): {}
                   }
                 }
               },
@@ -289,6 +309,39 @@ jobs:
             /usr/local/bin/cloudflared
 
           cloudflared --version
+
+      - name: Start Camoufox browser server
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          nohup npx @askjo/camofox-browser \
+            > "$RUNNER_TEMP/camofox.log" 2>&1 &
+
+          CAMOFOX_PID=$!
+
+          echo "CAMOFOX_PID=$CAMOFOX_PID" >> "$GITHUB_ENV"
+
+          # First run downloads Camoufox (~300MB), so allow extra time.
+          for attempt in {1..150}; do
+            if curl --fail --silent \
+              http://127.0.0.1:9377/health >/dev/null; then
+              echo "Camoufox browser server is running"
+              exit 0
+            fi
+
+            if ! kill -0 "$CAMOFOX_PID" 2>/dev/null; then
+              echo "::error::Camoufox server exited unexpectedly"
+              cat "$RUNNER_TEMP/camofox.log"
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "::error::Camoufox server failed to start"
+          cat "$RUNNER_TEMP/camofox.log"
+          exit 1
 
       - name: Start OpenClaw Gateway
         shell: bash
@@ -381,7 +434,7 @@ jobs:
               grep -oE \
                 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
                 "$RUNNER_TEMP/cloudflared.log" |
-              head -n 1 || true
+                head -n 1 || true
             )"
 
             if [ -n "$TUNNEL_URL" ]; then
@@ -397,9 +450,11 @@ jobs:
                 echo
                 echo "WebSocket: $WEBSOCKET_URL"
                 echo
-                echo "Model: \`google/${{ inputs.model }}\`"
+                echo "Model: \`nvidia/${{ inputs.model }}\`"
                 echo
-                echo "Gemini key slot: $SELECTED_GEMINI_KEY_INDEX"
+                echo "NVIDIA key slot: $SELECTED_NVIDIA_KEY_INDEX"
+                echo
+                echo "Browser: Camoufox (anti-detect)"
                 echo
                 echo "Device requests are approved automatically."
               } >> "$GITHUB_STEP_SUMMARY"
@@ -431,14 +486,15 @@ jobs:
           END_TIME=$((SECONDS + REQUESTED_HOURS * 3600))
 
           echo "Gateway: $TUNNEL_URL"
-          echo "Gemini key slot: $SELECTED_GEMINI_KEY_INDEX"
+          echo "NVIDIA key slot: $SELECTED_NVIDIA_KEY_INDEX"
           echo "Keeping gateway active for $REQUESTED_HOURS hour(s)"
 
           while (( SECONDS < END_TIME )); do
             for PROCESS_ID in \
               "$OPENCLAW_PID" \
               "$DEVICE_APPROVER_PID" \
-              "$CLOUDFLARED_PID"
+              "$CLOUDFLARED_PID" \
+              "$CAMOFOX_PID"
             do
               if ! kill -0 "$PROCESS_ID" 2>/dev/null; then
                 echo "::error::A required process stopped"
@@ -452,6 +508,12 @@ jobs:
               exit 1
             fi
 
+            if ! curl --fail --silent \
+              http://127.0.0.1:9377/health >/dev/null; then
+              echo "::error::Camoufox stopped responding"
+              exit 1
+            fi
+
             sleep 30
           done
 
@@ -459,9 +521,9 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          echo "===== Gemini responses ====="
+          echo "===== NVIDIA responses ====="
 
-          for FILE in "$RUNNER_TEMP"/gemini-response-*.json; do
+          for FILE in "$RUNNER_TEMP"/nim-response-*.json; do
             [ -f "$FILE" ] || continue
             echo "===== $(basename "$FILE") ====="
             jq . "$FILE" 2>/dev/null || true
@@ -469,6 +531,10 @@ jobs:
 
           echo "===== OpenClaw ====="
           tail -n 150 "$RUNNER_TEMP/openclaw.log" \
+            2>/dev/null || true
+
+          echo "===== Camoufox ====="
+          tail -n 100 "$RUNNER_TEMP/camofox.log" \
             2>/dev/null || true
 
           echo "===== Device approver ====="
