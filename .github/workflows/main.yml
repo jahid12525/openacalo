@@ -8,16 +8,6 @@ on:
         required: false
         default: "6"
         type: string
-      model:
-        description: NVIDIA NIM model
-        required: false
-        default: nvidia/nemotron-3-ultra-550b-a55b
-        type: choice
-        options:
-          - nvidia/nemotron-3-ultra-550b-a55b
-          - moonshotai/kimi-k2.6
-          - deepseek-ai/deepseek-v4-pro
-          - z-ai/glm-5.2
 
 permissions:
   contents: read
@@ -30,6 +20,7 @@ jobs:
     env:
       OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
       NVIDIA_API_KEYS: ${{ secrets.NVIDIA_API_KEYS }}
+      OPENCLAW_FALLBACK_SKIP_TTL_MS: "60000"
 
     steps:
       - name: Checkout code
@@ -103,7 +94,7 @@ jobs:
       - name: Select working NVIDIA API key
         shell: bash
         env:
-          MODEL: ${{ inputs.model }}
+          MODEL: nvidia/nemotron-3-ultra-550b-a55b
         run: |
           set -euo pipefail
 
@@ -191,7 +182,6 @@ jobs:
       - name: Configure OpenClaw
         shell: bash
         env:
-          MODEL: ${{ inputs.model }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           set -euo pipefail
@@ -202,7 +192,6 @@ jobs:
             --arg gatewayToken "$OPENCLAW_GATEWAY_TOKEN" \
             --arg nvidiaApiKey "$NVIDIA_API_KEY" \
             --arg telegramToken "${TELEGRAM_BOT_TOKEN:-}" \
-            --arg model "$MODEL" \
             '{
               gateway: {
                 mode: "local",
@@ -229,10 +218,18 @@ jobs:
               agents: {
                 defaults: {
                   model: {
-                    primary: ("nvidia/" + $model)
+                    primary: "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+                    fallbacks: [
+                      "nvidia/moonshotai/kimi-k2.6",
+                      "nvidia/deepseek-ai/deepseek-v4-pro",
+                      "nvidia/z-ai/glm-5.2"
+                    ]
                   },
                   models: {
-                    ("nvidia/" + $model): {}
+                    "nvidia/nvidia/nemotron-3-ultra-550b-a55b": {},
+                    "nvidia/moonshotai/kimi-k2.6": {},
+                    "nvidia/deepseek-ai/deepseek-v4-pro": {},
+                    "nvidia/z-ai/glm-5.2": {}
                   }
                 }
               },
@@ -450,7 +447,7 @@ jobs:
                 echo
                 echo "WebSocket: $WEBSOCKET_URL"
                 echo
-                echo "Model: \`nvidia/${{ inputs.model }}\`"
+                echo "Model: \`nvidia/nemotron-3-ultra-550b-a55b\` (auto-fallback enabled)"
                 echo
                 echo "NVIDIA key slot: $SELECTED_NVIDIA_KEY_INDEX"
                 echo
