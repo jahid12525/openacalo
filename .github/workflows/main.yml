@@ -90,18 +90,22 @@ jobs:
 
           # camofox-browser's native dep "impit" enforces pnpm via an
           # "only-allow pnpm" preinstall guard, so npm install always fails.
-          # Install pnpm and use it for this package.
+          # A pnpm *global* install needs "pnpm setup" (bin dir on PATH), which
+          # is awkward in CI. So we do a LOCAL pnpm install in a dedicated dir
+          # and run the binary directly from node_modules/.bin.
           npm install --global pnpm
 
-          # Give pnpm a global bin dir and expose it to later steps.
-          export PNPM_HOME="$HOME/.pnpm-global"
-          mkdir -p "$PNPM_HOME"
-          echo "PNPM_HOME=$PNPM_HOME" >> "$GITHUB_ENV"
-          echo "$PNPM_HOME" >> "$GITHUB_PATH"
-          export PATH="$PNPM_HOME:$PATH"
+          CAMOFOX_DIR="$HOME/camofox"
+          mkdir -p "$CAMOFOX_DIR"
+          cd "$CAMOFOX_DIR"
+
+          pnpm init >/dev/null 2>&1 || true
 
           # Installs the package + downloads the Camoufox binary (postinstall).
-          pnpm add --global @askjo/camofox-browser
+          pnpm add @askjo/camofox-browser
+
+          echo "CAMOFOX_DIR=$CAMOFOX_DIR" >> "$GITHUB_ENV"
+          echo "$CAMOFOX_DIR/node_modules/.bin" >> "$GITHUB_PATH"
 
           # Register the OpenClaw plugin so the agent gets the camofox_* tools.
           openclaw plugins install @askjo/camofox-browser
@@ -327,8 +331,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Use the pnpm-global binary (PNPM_HOME is on PATH via GITHUB_PATH).
-          nohup camofox-browser \
+          # Run the locally-installed binary directly (no global PATH needed).
+          CAMOFOX_BIN="$CAMOFOX_DIR/node_modules/.bin/camofox-browser"
+
+          if [ ! -x "$CAMOFOX_BIN" ]; then
+            # Fallback: some versions expose the bin as "camofox".
+            CAMOFOX_BIN="$CAMOFOX_DIR/node_modules/.bin/camofox"
+          fi
+
+          if [ ! -x "$CAMOFOX_BIN" ]; then
+            echo "::error::Camoufox binary not found in $CAMOFOX_DIR/node_modules/.bin"
+            ls -la "$CAMOFOX_DIR/node_modules/.bin" || true
+            exit 1
+          fi
+
+          nohup "$CAMOFOX_BIN" \
             > "$RUNNER_TEMP/camofox.log" 2>&1 &
 
           CAMOFOX_PID=$!
