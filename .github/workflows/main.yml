@@ -88,7 +88,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          npm install --global @askjo/camofox-browser
+          # camofox-browser's native dep "impit" enforces pnpm via an
+          # "only-allow pnpm" preinstall guard, so npm install always fails.
+          # Install pnpm and use it for this package.
+          npm install --global pnpm
+
+          # Give pnpm a global bin dir and expose it to later steps.
+          export PNPM_HOME="$HOME/.pnpm-global"
+          mkdir -p "$PNPM_HOME"
+          echo "PNPM_HOME=$PNPM_HOME" >> "$GITHUB_ENV"
+          echo "$PNPM_HOME" >> "$GITHUB_PATH"
+          export PATH="$PNPM_HOME:$PATH"
+
+          # Installs the package + downloads the Camoufox binary (postinstall).
+          pnpm add --global @askjo/camofox-browser
+
+          # Register the OpenClaw plugin so the agent gets the camofox_* tools.
           openclaw plugins install @askjo/camofox-browser
 
       - name: Select working NVIDIA API key
@@ -312,7 +327,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          nohup npx @askjo/camofox-browser \
+          # Use the pnpm-global binary (PNPM_HOME is on PATH via GITHUB_PATH).
+          nohup camofox-browser \
             > "$RUNNER_TEMP/camofox.log" 2>&1 &
 
           CAMOFOX_PID=$!
