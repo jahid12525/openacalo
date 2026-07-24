@@ -55,6 +55,15 @@ jobs:
             echo "Tunnel failed to start"; cat tunnel.log; exit 1
           fi
           echo "TUNNEL_URL=$URL" >> "$GITHUB_ENV"
+
+          echo "=================================================="
+          echo "🌐  YOUR OLLAMA CLOUD UI IS LIVE AT:"
+          echo ""
+          echo "    $URL"
+          echo ""
+          echo "=================================================="
+          echo "::notice title=🌐 Ollama Cloud UI::$URL"
+
           {
             echo "## 🌐 Your Ollama Cloud UI is live"
             echo ""
