@@ -1,0 +1,69 @@
+name: Ollama Cloud Web UI
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Keep the UI alive for this many minutes (max ~350)"
+        required: false
+        default: "120"
+
+jobs:
+  webui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355   # GitHub hard limit is 360 min (6h)
+
+    steps:
+      - name: Start Open WebUI connected to Ollama Cloud
+        run: |
+          docker run -d --name open-webui -p 3000:8080 \
+            -e OPENAI_API_BASE_URL="https://ollama.com/v1" \
+            -e OPENAI_API_KEY="${{ secrets.OLLAMA_API_KEY }}" \
+            -e ENABLE_OLLAMA_API="false" \
+            ghcr.io/open-webui/open-webui:main
+
+      - name: Wait for Open WebUI to be ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fs http://localhost:3000/health >/dev/null 2>&1; then
+              echo "Open WebUI is up"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Open WebUI failed to start"
+          docker logs open-webui
+          exit 1
+
+      - name: Install cloudflared
+        run: |
+          sudo curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+
+      - name: Start Cloudflare quick tunnel
+        run: |
+          nohup cloudflared tunnel --no-autoupdate --url http://localhost:3000 > tunnel.log 2>&1 &
+          URL=""
+          for i in $(seq 1 30); do
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -n1 || true)
+            [ -n "$URL" ] && break
+            sleep 2
+          done
+          if [ -z "$URL" ]; then
+            echo "Tunnel failed to start"; cat tunnel.log; exit 1
+          fi
+          echo "TUNNEL_URL=$URL" >> "$GITHUB_ENV"
+          {
+            echo "## 🌐 Your Ollama Cloud UI is live"
+            echo ""
+            echo "**$URL**"
+            echo ""
+            echo "First signup becomes the admin account. The UI stays up for ${{ inputs.minutes }} minutes."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep session alive
+        run: |
+          echo "✅ UI available at: $TUNNEL_URL"
+          sleep $(( ${{ inputs.minutes }} * 60 ))
